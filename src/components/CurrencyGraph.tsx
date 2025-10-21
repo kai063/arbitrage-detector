@@ -43,9 +43,8 @@ export default function CurrencyGraph({
   width = 800, 
   height = 600 
 }: CurrencyGraphProps) {
-  const graphRef = useRef<any>();
+  const graphRef = useRef<{ zoomToFit?: (duration?: number, padding?: number) => void } | null>(null);
   const [graphData, setGraphData] = useState<GraphData>({ nodes: [], links: [] });
-  const [hoveredLink, setHoveredLink] = useState<GraphLink | null>(null);
   const [tooltip, setTooltip] = useState<{ x: number; y: number; content: string } | null>(null);
 
   useEffect(() => {
@@ -91,7 +90,6 @@ export default function CurrencyGraph({
     
     exchangeRates.forEach(rate => {
       const linkId = `${rate.from}-${rate.to}`;
-      const reverseId = `${rate.to}-${rate.from}`;
       
       const isArbitrage = arbitrageEdges.has(linkId);
       
@@ -113,7 +111,7 @@ export default function CurrencyGraph({
 
     // Apply curvature for multiple links between same nodes
     const links: GraphLink[] = [];
-    linkMap.forEach((linkList, linkId) => {
+    linkMap.forEach((linkList) => {
       linkList.forEach((link, index) => {
         if (linkList.length > 1) {
           // Apply curvature for multiple links
@@ -127,7 +125,6 @@ export default function CurrencyGraph({
   }, [exchangeRates, arbitrageResult]);
 
   const handleLinkHover = (link: GraphLink | null, event?: MouseEvent) => {
-    setHoveredLink(link);
     
     if (link && event) {
       setTooltip({
@@ -142,19 +139,19 @@ export default function CurrencyGraph({
 
   const handleNodeDrag = (node: GraphNode) => {
     // Fix node position during drag
-    node.fx = node.x;
-    node.fy = node.y;
+    (node as unknown as { fx: number; fy: number; x: number; y: number }).fx = (node as unknown as { x: number }).x;
+    (node as unknown as { fx: number; fy: number; x: number; y: number }).fy = (node as unknown as { y: number }).y;
   };
 
   const handleNodeDragEnd = (node: GraphNode) => {
     // Release node position after drag
-    node.fx = undefined;
-    node.fy = undefined;
+    (node as unknown as { fx?: number; fy?: number }).fx = undefined;
+    (node as unknown as { fx?: number; fy?: number }).fy = undefined;
   };
 
   const handleEngineStop = () => {
     // Auto-fit graph when simulation stops
-    if (graphRef.current) {
+    if (graphRef.current && graphRef.current.zoomToFit) {
       graphRef.current.zoomToFit(400, 50);
     }
   };
@@ -185,6 +182,7 @@ export default function CurrencyGraph({
         <div className="relative border rounded-lg overflow-hidden bg-gray-50">
           {graphData.nodes.length > 0 ? (
             <ForceGraph2D
+              // @ts-expect-error - Complex library types, ref typing is handled by the library
               ref={graphRef}
               graphData={graphData}
               width={width}
@@ -193,32 +191,30 @@ export default function CurrencyGraph({
               
               // Node styling
               nodeLabel="name"
-              nodeColor={(node: any) => node.color}
+              nodeColor={(node: unknown) => (node as { color: string }).color}
               nodeRelSize={4}
-              nodeVal={(node: any) => node.size}
+              nodeVal={(node: unknown) => (node as { size: number }).size}
               
               // Link styling
-              linkColor={(link: any) => link.color}
-              linkWidth={(link: any) => link.width}
-              linkCurvature={(link: any) => link.curvature}
+              linkColor={(link: unknown) => (link as { color: string }).color}
+              linkWidth={(link: unknown) => (link as { width: number }).width}
+              linkCurvature={(link: unknown) => (link as { curvature: number }).curvature}
               linkDirectionalArrowLength={6}
               linkDirectionalArrowRelPos={1}
-              linkDirectionalArrowColor={(link: any) => link.color}
+              linkDirectionalArrowColor={(link: unknown) => (link as { color: string }).color}
               
               // Interactions
-              onLinkHover={handleLinkHover}
+              onLinkHover={(link: unknown) => handleLinkHover(link as GraphLink | null)}
               onNodeDrag={handleNodeDrag}
               onNodeDragEnd={handleNodeDragEnd}
               onEngineStop={handleEngineStop}
               
-              // Physics
-              linkDistance={80}
-              linkStrength={0.5}
-              chargeStrength={-300}
+              // Physics - remove unsupported props
               
               // Rendering
-              nodeCanvasObject={(node: any, ctx, globalScale) => {
-                const label = node.name;
+              nodeCanvasObject={(node: unknown, ctx: CanvasRenderingContext2D, globalScale: number) => {
+                const nodeData = node as { name: string; x: number; y: number; size: number; color: string };
+                const label = nodeData.name;
                 const fontSize = 12 / globalScale;
                 ctx.font = `${fontSize}px Sans-Serif`;
                 ctx.textAlign = 'center';
@@ -226,8 +222,8 @@ export default function CurrencyGraph({
                 
                 // Draw node circle
                 ctx.beginPath();
-                ctx.arc(node.x, node.y, node.size, 0, 2 * Math.PI, false);
-                ctx.fillStyle = node.color;
+                ctx.arc(nodeData.x, nodeData.y, nodeData.size, 0, 2 * Math.PI, false);
+                ctx.fillStyle = nodeData.color;
                 ctx.fill();
                 
                 // Draw border
@@ -237,28 +233,29 @@ export default function CurrencyGraph({
                 
                 // Draw label
                 ctx.fillStyle = '#ffffff';
-                ctx.fillText(label, node.x, node.y);
+                ctx.fillText(label, nodeData.x, nodeData.y);
               }}
               
-              linkCanvasObject={(link: any, ctx, globalScale) => {
-                const start = link.source;
-                const end = link.target;
+              linkCanvasObject={(link: unknown, ctx: CanvasRenderingContext2D, globalScale: number) => {
+                const linkData = link as { source: { x: number; y: number }; target: { x: number; y: number }; color: string; width: number; curvature: number };
+                const start = linkData.source;
+                const end = linkData.target;
                 
                 // Skip default rendering, we'll do custom
                 if (!start || !end || typeof start !== 'object' || typeof end !== 'object') return;
                 
-                ctx.strokeStyle = link.color;
-                ctx.lineWidth = link.width / globalScale;
+                ctx.strokeStyle = linkData.color;
+                ctx.lineWidth = linkData.width / globalScale;
                 
                 ctx.beginPath();
-                if (link.curvature) {
+                if (linkData.curvature) {
                   // Draw curved line
                   const dx = end.x - start.x;
                   const dy = end.y - start.y;
                   const midX = start.x + dx / 2;
                   const midY = start.y + dy / 2;
-                  const offsetX = -dy * link.curvature;
-                  const offsetY = dx * link.curvature;
+                  const offsetX = -dy * linkData.curvature;
+                  const offsetY = dx * linkData.curvature;
                   
                   ctx.moveTo(start.x, start.y);
                   ctx.quadraticCurveTo(midX + offsetX, midY + offsetY, end.x, end.y);
@@ -270,13 +267,13 @@ export default function CurrencyGraph({
                 ctx.stroke();
                 
                 // Draw arrow
-                if (link.width > 1) {
+                if (linkData.width > 1) {
                   const arrowLength = 8 / globalScale;
                   const dx = end.x - start.x;
                   const dy = end.y - start.y;
                   const angle = Math.atan2(dy, dx);
                   
-                  ctx.fillStyle = link.color;
+                  ctx.fillStyle = linkData.color;
                   ctx.beginPath();
                   ctx.moveTo(end.x, end.y);
                   ctx.lineTo(

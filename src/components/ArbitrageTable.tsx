@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { ArbitrageResult, ArbitrageCycle } from '@/lib/algorithms/arbitrage';
+import { ArbitrageResult } from '@/lib/algorithms/arbitrage';
 import { Download, TrendingUp, ArrowUpDown } from 'lucide-react';
 
 interface ArbitrageEntry {
@@ -42,7 +42,7 @@ export default function ArbitrageTable({ arbitrageHistory }: ArbitrageTableProps
           profitPercentage: cycle.profitPercentage,
           spread: cycle.profitPercentage / 100, // Convert to decimal
           volume: cycle.totalVolume,
-          type: (result as any).type || 'manual'
+          type: ((result as { type?: string }).type === 'realtime' ? 'realtime' : 'manual') as 'manual' | 'realtime'
         });
       });
     });

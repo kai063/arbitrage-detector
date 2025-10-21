@@ -19,7 +19,7 @@ interface StreamState {
 
 interface StreamMessage {
   type: 'rates' | 'arbitrage' | 'error' | 'status' | 'log';
-  data: any;
+  data: unknown;
   timestamp: string;
 }
 
@@ -63,7 +63,7 @@ export function useArbitrageStream(options: UseArbitrageStreamOptions = {}) {
     
     try {
       // Create audio context and play notification sound
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const audioContext = new (window.AudioContext || (window as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext || AudioContext)();
       const oscillator = audioContext.createOscillator();
       const gainNode = audioContext.createGain();
       
@@ -146,12 +146,12 @@ export function useArbitrageStream(options: UseArbitrageStreamOptions = {}) {
         case 'rates':
           setState(prev => ({
             ...prev,
-            currentRates: message.data.rates || []
+            currentRates: (message.data as { rates: ExchangeRate[] }).rates || []
           }));
           
           addLog({
             type: 'info',
-            message: `Aktualizovány kurzy: ${message.data.totalPairs} párů`
+            message: `Aktualizovány kurzy: ${(message.data as { totalPairs: number }).totalPairs} párů`
           });
           break;
 
@@ -182,25 +182,25 @@ export function useArbitrageStream(options: UseArbitrageStreamOptions = {}) {
         case 'error':
           setState(prev => ({
             ...prev,
-            lastError: message.data.error
+            lastError: (message.data as { error: string }).error
           }));
           
           addLog({
             type: 'error',
-            message: `Chyba: ${message.data.error}`
+            message: `Chyba: ${(message.data as { error: string }).error}`
           });
           break;
 
         case 'status':
           addLog({
             type: 'info',
-            message: message.data.message || 'Status update'
+            message: (message.data as { message: string }).message || 'Status update'
           });
           break;
 
         case 'log':
-          if (message.data.entry) {
-            addLog(message.data.entry);
+          if ((message.data as { entry: DebugLogEntry }).entry) {
+            addLog((message.data as { entry: DebugLogEntry }).entry);
           }
           break;
       }
@@ -231,7 +231,7 @@ export function useArbitrageStream(options: UseArbitrageStreamOptions = {}) {
     });
 
     try {
-      const eventSource = new EventSource('/api/arbitrage', {
+      const eventSource = new EventSource('/api/arbitrage/stream', {
         withCredentials: false
       });
 
@@ -271,7 +271,15 @@ export function useArbitrageStream(options: UseArbitrageStreamOptions = {}) {
         });
 
         // Schedule reconnect
-        scheduleReconnect();
+        setTimeout(() => {
+          if (state.reconnectAttempts < maxReconnectAttempts) {
+            setState(prev => ({
+              ...prev,
+              reconnectAttempts: prev.reconnectAttempts + 1
+            }));
+            connect();
+          }
+        }, reconnectDelay);
       };
 
       eventSourceRef.current = eventSource;
@@ -289,7 +297,7 @@ export function useArbitrageStream(options: UseArbitrageStreamOptions = {}) {
         }));
       }, 5000);
 
-    } catch (error) {
+    } catch {
       setState(prev => ({
         ...prev,
         isConnecting: false,
@@ -301,42 +309,18 @@ export function useArbitrageStream(options: UseArbitrageStreamOptions = {}) {
         message: 'Nepodařilo se vytvořit připojení'
       });
 
-      scheduleReconnect();
+      setTimeout(() => {
+        if (state.reconnectAttempts < maxReconnectAttempts) {
+          setState(prev => ({
+            ...prev,
+            reconnectAttempts: prev.reconnectAttempts + 1
+          }));
+          connect();
+        }
+      }, reconnectDelay);
     }
-  }, [handleMessage, addLog, calculateConnectionQuality]);
+  }, [handleMessage, addLog, calculateConnectionQuality, state.reconnectAttempts, maxReconnectAttempts, reconnectDelay]);
 
-  // Schedule reconnect
-  const scheduleReconnect = useCallback(() => {
-    if (state.reconnectAttempts >= maxReconnectAttempts) {
-      addLog({
-        type: 'error',
-        message: `Maximální počet pokusů o reconnect (${maxReconnectAttempts}) dosažen`
-      });
-      return;
-    }
-
-    const delay = reconnectDelay * Math.pow(1.5, state.reconnectAttempts);
-    
-    setState(prev => ({
-      ...prev,
-      reconnectAttempts: prev.reconnectAttempts + 1
-    }));
-
-    addLog({
-      type: 'info',
-      message: `Pokus o reconnect za ${Math.round(delay / 1000)}s (pokus ${state.reconnectAttempts + 1}/${maxReconnectAttempts})`
-    });
-
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-    }
-
-    reconnectTimeoutRef.current = setTimeout(() => {
-      if (!state.isConnected) {
-        connect();
-      }
-    }, delay);
-  }, [state.reconnectAttempts, state.isConnected, maxReconnectAttempts, reconnectDelay, connect, addLog]);
 
   // Disconnect
   const disconnect = useCallback(() => {
@@ -390,7 +374,7 @@ export function useArbitrageStream(options: UseArbitrageStreamOptions = {}) {
     return () => {
       disconnect();
     };
-  }, [autoConnect, enableNotifications]);
+  }, [autoConnect, enableNotifications, connect, disconnect]);
 
   // Cleanup on unmount
   useEffect(() => {

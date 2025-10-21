@@ -60,7 +60,7 @@ export default function Statistics({ arbitrageHistory, totalRuns, isRealTimeActi
   const chartData = useMemo(() => {
     const data: ChartDataPoint[] = [];
     
-    arbitrageHistory.forEach((result, index) => {
+    arbitrageHistory.forEach((result) => {
       const maxProfitInResult = result.cycles.length > 0 
         ? Math.max(...result.cycles.map(c => c.profitPercentage))
         : 0;
@@ -69,13 +69,15 @@ export default function Statistics({ arbitrageHistory, totalRuns, isRealTimeActi
         ? result.cycles.reduce((sum, c) => sum + c.profitPercentage, 0) / result.cycles.length
         : 0;
 
+      const timestampDate = new Date(result.timestamp);
+      
       data.push({
-        time: result.timestamp.toLocaleTimeString('cs-CZ', { 
+        time: timestampDate.toLocaleTimeString('cs-CZ', { 
           hour: '2-digit', 
           minute: '2-digit',
           second: '2-digit'
         }),
-        timestamp: result.timestamp.getTime(),
+        timestamp: timestampDate.getTime(),
         profit: maxProfitInResult,
         opportunities: result.cycles.length,
         avgProfit: avgProfitInResult
@@ -85,7 +87,7 @@ export default function Statistics({ arbitrageHistory, totalRuns, isRealTimeActi
     return data.slice(-20); // Keep last 20 data points
   }, [arbitrageHistory]);
 
-  const formatTooltip = (value: any, name: string) => {
+  const formatTooltip = (value: number | string, name: string) => {
     if (name === 'profit' || name === 'avgProfit') {
       return [`${Number(value).toFixed(4)}%`, name === 'profit' ? 'Max Profit' : 'Avg Profit'];
     }

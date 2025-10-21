@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ExchangeRate as LegacyExchangeRate, ArbitrageResult, detectCurrencyArbitrage, validateExchangeRates } from '@/lib/algorithms/arbitrage';
 import { getBinanceClient, startBinanceStream } from '@/lib/binance/client';
-import { StreamMessage, ArbitrageStream } from '@/lib/types';
+import { getBinanceRestClient } from '@/lib/binance/rest-client';
+import { convertToGraph, createSymbolFilter } from '@/lib/binance/rate-converter';
+import { StreamMessage } from '@/lib/types';
 
 export interface ArbitrageRequest {
   exchangeRates: {
@@ -28,52 +30,108 @@ export interface ArbitrageResponse {
 }
 
 export async function POST(request: NextRequest): Promise<NextResponse<ArbitrageResponse>> {
+  const startTime = Date.now();
+  
   try {
-    const body: ArbitrageRequest = await request.json();
+    let body: ArbitrageRequest;
+    
+    try {
+      const requestText = await request.text();
+      body = requestText.trim() ? JSON.parse(requestText) : { exchangeRates: [] };
+    } catch {
+      // If body is empty or invalid JSON, use Binance data automatically
+      body = { exchangeRates: [] };
+    }
     
     // Extract settings with defaults
     const settings = {
       maxIterations: body.settings?.maxIterations || 10,
       minProfitThreshold: body.settings?.minProfitThreshold || 0.005, // 0.5%
       maxPathLength: body.settings?.maxPathLength || 4,
-      selectedCurrencies: body.settings?.selectedCurrencies || ['BTC', 'ETH', 'BNB', 'EUR', 'USDC'],
+      selectedCurrencies: body.settings?.selectedCurrencies || [],
       useRealTimeData: body.settings?.useRealTimeData || false
     };
+    
+    console.log('🔧 API Settings received:', {
+      requestSettings: body.settings,
+      finalSettings: settings,
+      exchangeRatesLength: body.exchangeRates?.length || 0
+    });
 
-    // If using real-time data, get from Binance
-    if (settings.useRealTimeData) {
-      const binanceClient = getBinanceClient();
-      startBinanceStream();
+    // If using real-time data or empty request body, get from Binance REST API
+    if (settings.useRealTimeData || body.exchangeRates.length === 0) {
+      const restClient = getBinanceRestClient();
+      const tickersResult = await restClient.fetchFilteredTickers();
       
-      // Wait a moment for data to be available
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      const realTimeRates = binanceClient.getLegacyRates();
-      
-      if (realTimeRates.length < 3) {
+      if (!tickersResult.success || !tickersResult.data) {
         return NextResponse.json(
           {
             success: false,
-            error: 'Insufficient real-time data available. Please try again in a moment.',
+            error: `Failed to fetch Binance data: ${tickersResult.error}`,
+            timestamp: new Date().toISOString()
+          },
+          { status: 500 }
+        );
+      }
+
+      // Convert Binance tickers to exchange rates
+      const conversionResult = convertToGraph(tickersResult.data, {
+        includeReverse: true,
+        filterSymbols: createSymbolFilter({ quoteCurrencies: ['USDT'] }),
+        maxSpread: 2 // 2% max spread for arbitrage
+      });
+      
+      if (conversionResult.legacyRates.length < 3) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: 'Insufficient valid trading pairs available from Binance.',
             timestamp: new Date().toISOString()
           },
           { status: 400 }
         );
       }
 
-      // Filter rates based on selected currencies
-      const filteredRates = realTimeRates.filter(rate => 
-        settings.selectedCurrencies.includes(rate.from) && 
-        settings.selectedCurrencies.includes(rate.to)
-      );
+      // Filter rates based on selected currencies if specified
+      let filteredRates = conversionResult.legacyRates;
+      if (settings.selectedCurrencies.length > 0) {
+        filteredRates = conversionResult.legacyRates.filter(rate => 
+          settings.selectedCurrencies.includes(rate.from) && 
+          settings.selectedCurrencies.includes(rate.to)
+        );
+      }
 
-      // Detect arbitrage with real-time data
+      // Detect arbitrage with Binance data
+      console.log('🔍 Starting arbitrage detection with Binance data:', {
+        totalRates: filteredRates.length,
+        settings: settings,
+        sampleRates: filteredRates.slice(0, 5)
+      });
+      
       const arbitrageResult = detectCurrencyArbitrage(filteredRates, settings);
+      const executionTime = Date.now() - startTime;
+      
+      console.log('✅ Arbitrage detection completed:', {
+        executionTime: `${executionTime}ms`,
+        cyclesFound: arbitrageResult.cycles.length,
+        totalOpportunities: arbitrageResult.totalOpportunities,
+        bestProfit: arbitrageResult.bestOpportunity?.profitPercentage
+      });
       
       return NextResponse.json(
         {
           success: true,
-          data: { ...arbitrageResult, type: 'realtime' },
+          data: { 
+            ...arbitrageResult, 
+            type: settings.useRealTimeData ? 'realtime' : 'binance',
+            executionTime,
+            dataSource: {
+              totalPairs: conversionResult.totalPairs,
+              processedSymbols: conversionResult.processedSymbols.length,
+              skippedSymbols: conversionResult.skippedSymbols.length,
+              cached: tickersResult.cached || false
+            }
+          },
           timestamp: new Date().toISOString()
         },
         { status: 200 }
@@ -142,13 +200,38 @@ export async function POST(request: NextRequest): Promise<NextResponse<Arbitrage
     }
 
     // Detect arbitrage using Bellman-Ford algorithm with settings
+    console.log('🔍 Starting arbitrage detection with manual data:', {
+      totalRates: exchangeRates.length,
+      settings: settings,
+      sampleRates: exchangeRates.slice(0, 5)
+    });
+    
     const arbitrageResult = detectCurrencyArbitrage(exchangeRates, settings);
+    const executionTime = Date.now() - startTime;
+    
+    console.log('✅ Manual arbitrage detection completed:', {
+      executionTime: `${executionTime}ms`,
+      cyclesFound: arbitrageResult.cycles.length,
+      totalOpportunities: arbitrageResult.totalOpportunities,
+      bestProfit: arbitrageResult.bestOpportunity?.profitPercentage
+    });
 
     // Return successful response
     return NextResponse.json(
       {
         success: true,
-        data: { ...arbitrageResult, type: 'manual' },
+        data: { 
+          ...arbitrageResult, 
+          type: 'manual',
+          executionTime,
+          dataSource: {
+            totalPairs: exchangeRates.length,
+            processedSymbols: exchangeRates.length,
+            skippedSymbols: 0,
+            cached: false,
+            source: 'manual_input'
+          }
+        },
         timestamp: new Date().toISOString()
       },
       { status: 200 }
@@ -193,29 +276,63 @@ export async function POST(request: NextRequest): Promise<NextResponse<Arbitrage
   }
 }
 
-// GET endpoint for real-time arbitrage stream using Server-Sent Events
+// GET endpoint for Binance exchange rates data
 export async function GET(request: NextRequest): Promise<NextResponse> {
-  // Check if SSE is requested via headers
-  const acceptHeader = request.headers.get('accept');
-  if (acceptHeader?.includes('text/event-stream')) {
-    return handleSSEStream();
+  try {
+    // Check if SSE is requested via headers
+    const acceptHeader = request.headers.get('accept');
+    if (acceptHeader?.includes('text/event-stream')) {
+      return handleSSEStream();
+    }
+
+    // Get Binance data via REST API
+    const restClient = getBinanceRestClient();
+    const tickersResult = await restClient.fetchFilteredTickers();
+    
+    if (!tickersResult.success || !tickersResult.data) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: `Failed to fetch Binance data: ${tickersResult.error}`,
+          timestamp: new Date().toISOString()
+        },
+        { status: 500 }
+      );
+    }
+
+    // Convert to exchange rates format
+    const conversionResult = convertToGraph(tickersResult.data, {
+      includeReverse: true,
+      filterSymbols: createSymbolFilter({ quoteCurrencies: ['USDT'] }),
+      maxSpread: 5 // 5% max spread for data display
+    });
+
+    // Return exchange rates data
+    return NextResponse.json({
+      success: true,
+      data: {
+        rates: conversionResult.exchangeRates,
+        legacyRates: conversionResult.legacyRates,
+        totalPairs: conversionResult.totalPairs,
+        processedSymbols: conversionResult.processedSymbols.length,
+        skippedSymbols: conversionResult.skippedSymbols.length,
+        cached: tickersResult.cached,
+        timestamp: tickersResult.timestamp
+      },
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('GET /api/arbitrage error:', error);
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Failed to fetch exchange rates data',
+        timestamp: new Date().toISOString()
+      },
+      { status: 500 }
+    );
   }
-
-  // Default GET response for status
-  const binanceClient = getBinanceClient();
-  const connectionStatus = binanceClient.getConnectionStatus();
-  const currentRates = binanceClient.getCurrentRates();
-
-  return NextResponse.json({
-    success: true,
-    data: {
-      connectionStatus,
-      ratesCount: currentRates.totalPairs,
-      lastUpdate: currentRates.lastUpdate,
-      isStreaming: connectionStatus.state === 'connected'
-    },
-    timestamp: new Date().toISOString()
-  });
 }
 
 function handleSSEStream(): NextResponse {

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -10,7 +10,9 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Slider } from '@/components/ui/slider';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
-import { ExchangeRate, ArbitrageResult, detectCurrencyArbitrage, formatArbitrageResult } from '@/lib/algorithms/arbitrage';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { Label } from '@/components/ui/label';
+import { ExchangeRate, ArbitrageResult } from '@/lib/algorithms/arbitrage';
 import { AlertCircle, Plus, Search, Trash2, Settings, Play, Square, Wifi, WifiOff, Activity, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { ThemeToggle } from '@/components/ThemeToggle';
@@ -18,6 +20,8 @@ import dynamic from 'next/dynamic';
 import AlgorithmDebug from '@/components/AlgorithmDebug';
 import ArbitrageTable from '@/components/ArbitrageTable';
 import Statistics from '@/components/Statistics';
+import BinanceDataTable from '@/components/BinanceDataTable';
+import TestDataGenerator from '@/components/TestDataGenerator';
 import { useArbitrageStream } from '@/hooks/useArbitrageStream';
 
 // Dynamically import CurrencyGraph to avoid SSR issues
@@ -34,6 +38,17 @@ interface AlgorithmSettings {
   autoRefresh: boolean;
 }
 
+type DataSource = 'manual' | 'binance';
+
+interface BinanceDataInfo {
+  totalPairs: number;
+  processedSymbols: number;
+  skippedSymbols: number;
+  cached: boolean;
+  timestamp: Date;
+  loading: boolean;
+}
+
 export default function Home() {
   const [exchangeRates, setExchangeRates] = useState<ExchangeRate[]>([]);
   const [newRate, setNewRate] = useState({ from: '', to: '', rate: '' });
@@ -41,10 +56,26 @@ export default function Home() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
   const [isRealTimeActive, setIsRealTimeActive] = useState(false);
-  const [realTimeData, setRealTimeData] = useState<any>(null);
+  const [realTimeData, setRealTimeData] = useState<{
+    rates: import('@/lib/types').ExchangeRate[];
+    totalPairs: number;
+    lastUpdate: Date;
+  } | null>(null);
   const [arbitrageHistory, setArbitrageHistory] = useState<ArbitrageResult[]>([]);
   const [totalRuns, setTotalRuns] = useState(0);
   const [isDebugEnabled, setIsDebugEnabled] = useState(false);
+  
+  // Data source selection
+  const [dataSource, setDataSource] = useState<DataSource>('manual');
+  const [binanceDataInfo, setBinanceDataInfo] = useState<BinanceDataInfo>({
+    totalPairs: 0,
+    processedSymbols: 0,
+    skippedSymbols: 0,
+    cached: false,
+    timestamp: new Date(),
+    loading: false
+  });
+  const [selectedBinancePairs, setSelectedBinancePairs] = useState<string[]>([]);
 
   // Initialize arbitrage stream
   const stream = useArbitrageStream({
@@ -58,11 +89,102 @@ export default function Home() {
     maxIterations: 10,
     minProfitThreshold: 0.5,
     maxPathLength: 4,
-    selectedCurrencies: ['BTC', 'ETH', 'BNB', 'EUR', 'USDC'],
+    selectedCurrencies: [],
     autoRefresh: false
   });
 
-  const availableCurrencies = ['BTC', 'ETH', 'BNB', 'EUR', 'USDC', 'USDT', 'ADA', 'DOT', 'SOL', 'MATIC'];
+
+  // Fetch available pairs for Binance data source
+  const fetchAvailablePairs = async () => {
+    try {
+      const response = await fetch('/api/binance/pairs?quote=USDT&maxSpread=2');
+      const data = await response.json();
+      
+      if (data.success && data.data) {
+        const uniqueCurrencies = new Set<string>();
+        data.data.pairs.forEach((pair: { baseCurrency: string; quoteCurrency: string }) => {
+          uniqueCurrencies.add(pair.baseCurrency);
+          uniqueCurrencies.add(pair.quoteCurrency);
+        });
+      }
+    } catch {
+      toast.error('Nepodařilo se načíst dostupné měnové páry');
+    }
+  };
+
+  // Load and analyze Binance data
+  const loadAndAnalyzeBinanceData = useCallback(async () => {
+    setBinanceDataInfo(prev => ({ ...prev, loading: true }));
+    setIsAnalyzing(true);
+    setErrors([]);
+
+    try {
+      // Update settings to use selected currencies
+      const updatedSettings = {
+        ...settings,
+        selectedCurrencies: selectedBinancePairs,
+        useRealTimeData: false
+      };
+
+      const response = await fetch('/api/arbitrage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          exchangeRates: [], // Empty to trigger Binance data
+          settings: updatedSettings
+        })
+      });
+
+      const data = await response.json();
+      
+      if (data.success && data.data) {
+        setArbitrageResult(data.data);
+        setArbitrageHistory(prev => [...prev, data.data].slice(-50));
+        setTotalRuns(prev => prev + 1);
+
+        // Update Binance data info
+        if (data.data.dataSource) {
+          setBinanceDataInfo({
+            totalPairs: data.data.dataSource.totalPairs || 0,
+            processedSymbols: data.data.dataSource.processedSymbols || 0,
+            skippedSymbols: data.data.dataSource.skippedSymbols || 0,
+            cached: data.data.dataSource.cached || false,
+            timestamp: new Date(),
+            loading: false
+          });
+        }
+
+        // Show success toast
+        if (data.data.cycles.length > 0) {
+          toast.success('Binance arbitráž detekována!', {
+            description: `Nalezeno ${data.data.cycles.length} arbitrážních příležitostí`,
+          });
+        } else {
+          toast.info('Binance analýza dokončena', {
+            description: 'Žádné arbitrážní příležitosti nebyly nalezeny',
+          });
+        }
+      } else {
+        setErrors([data.error || 'Chyba při analýze Binance dat']);
+        toast.error('Chyba při analýze Binance dat', {
+          description: data.error || 'Neznámá chyba při načítání dat z Binance',
+        });
+      }
+    } catch {
+      setErrors(['Chyba při načítání Binance dat']);
+      toast.error('Síťová chyba', {
+        description: 'Nepodařilo se připojit k Binance API',
+      });
+    } finally {
+      setIsAnalyzing(false);
+      setBinanceDataInfo(prev => ({ ...prev, loading: false }));
+    }
+  }, [selectedBinancePairs, settings]);
+
+  // Fetch available pairs when component mounts
+  useEffect(() => {
+    fetchAvailablePairs();
+  }, []);
 
   const addExchangeRate = () => {
     setErrors([]);
@@ -108,9 +230,15 @@ export default function Home() {
     setErrors([]);
   };
 
-  const detectArbitrage = async (useRealTime = false) => {
-    if (!useRealTime && exchangeRates.length < 3) {
+  const detectArbitrage = useCallback(async (useRealTime = false) => {
+    // Check data source and requirements
+    if (dataSource === 'manual' && !useRealTime && exchangeRates.length < 3) {
       setErrors(['Pro detekci arbitráže jsou potřeba alespoň 3 směnné kurzy']);
+      return;
+    }
+    
+    if (dataSource === 'binance') {
+      loadAndAnalyzeBinanceData();
       return;
     }
 
@@ -164,7 +292,7 @@ export default function Home() {
           description: data.error || 'Neznámá chyba při detekci arbitráže',
         });
       }
-    } catch (error) {
+    } catch {
       setErrors(['Chyba při analýze arbitráže']);
       toast.error('Síťová chyba', {
         description: 'Nepodařilo se připojit k serveru',
@@ -176,7 +304,7 @@ export default function Home() {
     } finally {
       setIsAnalyzing(false);
     }
-  };
+  }, [dataSource, loadAndAnalyzeBinanceData, exchangeRates, settings.maxIterations, settings.minProfitThreshold, settings.maxPathLength, settings.selectedCurrencies]);
 
   const startRealTimeDetection = () => {
     setIsRealTimeActive(true);
@@ -213,14 +341,14 @@ export default function Home() {
       setRealTimeData({
         rates: stream.currentRates,
         totalPairs: stream.ratesCount,
-        lastUpdate: stream.lastUpdate
+        lastUpdate: stream.lastUpdate || new Date()
       });
     }
 
     if (stream.lastError) {
       setErrors([stream.lastError]);
     }
-  }, [stream.detectedArbitrages, stream.currentRates, stream.lastError, stream.latestArbitrage]);
+  }, [stream.detectedArbitrages, stream.currentRates, stream.lastError, stream.latestArbitrage, stream.lastUpdate, stream.ratesCount]);
 
   // Update real-time status
   useEffect(() => {
@@ -244,7 +372,7 @@ export default function Home() {
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [settings.autoRefresh, exchangeRates, isRealTimeActive]);
+  }, [settings.autoRefresh, exchangeRates, isRealTimeActive, detectArbitrage]);
 
   // Toast notifications for stream events
   useEffect(() => {
@@ -257,7 +385,7 @@ export default function Home() {
         },
       });
     }
-  }, [stream.lastError]);
+  }, [stream.lastError, stream]);
 
   useEffect(() => {
     if (stream.hasNewArbitrages && stream.latestArbitrage?.bestOpportunity) {
@@ -354,6 +482,121 @@ export default function Home() {
             </div>
           )}
         </div>
+
+        {/* Data Source Selection */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Search className="h-5 w-5" />
+              Zdroj dat
+            </CardTitle>
+            <CardDescription>
+              Vyberte zdroj dat pro detekci arbitráže
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <RadioGroup value={dataSource} onValueChange={(value: DataSource) => setDataSource(value)}>
+              <div className="flex items-center space-x-2">
+                <RadioGroupItem value="manual" id="manual" />
+                <Label htmlFor="manual" className="text-sm font-medium">
+                  Manuální zadávání kurzů
+                </Label>
+              </div>
+              <div className="flex items-center space-x-2">
+                <RadioGroupItem value="binance" id="binance" />
+                <Label htmlFor="binance" className="text-sm font-medium">
+                  Binance Live Data
+                </Label>
+              </div>
+            </RadioGroup>
+
+            {/* Binance Data Source Controls */}
+            {dataSource === 'binance' && (
+              <div className="space-y-4 p-4 bg-blue-50 dark:bg-blue-950/20 rounded-lg border">
+                <div className="space-y-3">
+                  <label className="text-sm font-medium">Vybrané měnové páry</label>
+                  <Select 
+                    value={selectedBinancePairs.join(',')} 
+                    onValueChange={(value) => {
+                      const currencies = value ? value.split(',') : [];
+                      setSelectedBinancePairs(currencies);
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Vyberte měny">
+                        {selectedBinancePairs.length > 0 
+                          ? `${selectedBinancePairs.length} vybraných měn`
+                          : "Vyberte měny"
+                        }
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="BTC,ETH,BNB,USDT,USDC">Základní sada (5 měn)</SelectItem>
+                      <SelectItem value="BTC,ETH,BNB,USDT,USDC,ADA,DOT">Rozšířená sada (7 měn)</SelectItem>
+                      <SelectItem value="BTC,ETH,BNB,USDT,USDC,ADA,DOT,SOL,MATIC,LINK">Plná sada (10 měn)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <div className="flex flex-wrap gap-1">
+                    {selectedBinancePairs.map(currency => (
+                      <Badge key={currency} variant="secondary" className="text-xs">
+                        {currency}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Binance Data Info */}
+                {(binanceDataInfo.totalPairs > 0 || binanceDataInfo.loading) && (
+                  <div className="space-y-2">
+                    <h4 className="text-sm font-medium">Informace o datech</h4>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                      <div className="space-y-1">
+                        <p className="text-gray-500">Celkem párů</p>
+                        <p className="font-mono">{binanceDataInfo.loading ? '...' : binanceDataInfo.totalPairs}</p>
+                      </div>
+                      <div className="space-y-1">
+                        <p className="text-gray-500">Zpracováno</p>
+                        <p className="font-mono">{binanceDataInfo.loading ? '...' : binanceDataInfo.processedSymbols}</p>
+                      </div>
+                      <div className="space-y-1">
+                        <p className="text-gray-500">Přeskočeno</p>
+                        <p className="font-mono">{binanceDataInfo.loading ? '...' : binanceDataInfo.skippedSymbols}</p>
+                      </div>
+                      <div className="space-y-1">
+                        <p className="text-gray-500">Cache</p>
+                        <Badge variant={binanceDataInfo.cached ? "default" : "outline"} className="text-xs">
+                          {binanceDataInfo.loading ? '...' : (binanceDataInfo.cached ? 'Ano' : 'Ne')}
+                        </Badge>
+                      </div>
+                    </div>
+                    {!binanceDataInfo.loading && (
+                      <p className="text-xs text-gray-500">
+                        Poslední aktualizace: {binanceDataInfo.timestamp.toLocaleString('cs-CZ')}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {/* Load & Analyze Button */}
+                <Button 
+                  onClick={loadAndAnalyzeBinanceData} 
+                  disabled={binanceDataInfo.loading || selectedBinancePairs.length === 0}
+                  className="w-full"
+                >
+                  {binanceDataInfo.loading ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <Search className="h-4 w-4 mr-2" />
+                  )}
+                  {binanceDataInfo.loading ? 'Načítání dat z Binance...' : 'Načíst data a analyzovat'}
+                </Button>
+                
+                {/* Binance Data Table */}
+                <BinanceDataTable isVisible={true} />
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
         {/* Algorithm Settings */}
         <Card>
@@ -460,55 +703,91 @@ export default function Home() {
 
               {/* Auto-refresh and Controls */}
               <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <label className="text-sm font-medium">Auto-refresh</label>
-                    <p className="text-xs text-gray-500">Automatická detekce každých 5s</p>
+                {dataSource === 'manual' ? (
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <label className="text-sm font-medium">Auto-refresh</label>
+                      <p className="text-xs text-gray-500">Automatická detekce každých 5s</p>
+                    </div>
+                    <Switch
+                      checked={settings.autoRefresh}
+                      onCheckedChange={(checked) => setSettings(prev => ({ ...prev, autoRefresh: checked }))}
+                    />
                   </div>
-                  <Switch
-                    checked={settings.autoRefresh}
-                    onCheckedChange={(checked) => setSettings(prev => ({ ...prev, autoRefresh: checked }))}
-                  />
-                </div>
+                ) : (
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <label className="text-sm font-medium">Continuous Monitoring</label>
+                      <p className="text-xs text-gray-500">Real-time stream s automatickou detekcí</p>
+                    </div>
+                    <Switch
+                      checked={isRealTimeActive}
+                      onCheckedChange={(checked) => {
+                        if (checked) {
+                          startRealTimeDetection();
+                        } else {
+                          stopRealTimeDetection();
+                        }
+                      }}
+                    />
+                  </div>
+                )}
 
                 {/* Detection Controls */}
                 <div className="flex gap-2">
-                  <Button 
-                    onClick={() => detectArbitrage(false)} 
-                    disabled={isAnalyzing || (exchangeRates.length < 3 && !isRealTimeActive)}
-                    className="flex-1"
-                  >
-                    {isAnalyzing ? (
-                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    ) : (
-                      <Search className="h-4 w-4 mr-2" />
-                    )}
-                    {isAnalyzing ? 'Analyzuji...' : 'Detekovat arbitráž'}
-                  </Button>
-                  
-                  {!isRealTimeActive ? (
+                  {dataSource === 'manual' ? (
                     <Button 
-                      onClick={startRealTimeDetection}
-                      variant="outline"
-                      className="flex items-center gap-2"
-                      disabled={stream.isConnecting}
+                      onClick={() => detectArbitrage(false)} 
+                      disabled={isAnalyzing || (exchangeRates.length < 3 && !isRealTimeActive)}
+                      className="flex-1"
                     >
-                      {stream.isConnecting ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
+                      {isAnalyzing ? (
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                       ) : (
-                        <Play className="h-4 w-4" />
+                        <Search className="h-4 w-4 mr-2" />
                       )}
-                      Real-time
+                      {isAnalyzing ? 'Analyzuji...' : 'Detekovat arbitráž'}
                     </Button>
                   ) : (
                     <Button 
-                      onClick={stopRealTimeDetection}
-                      variant="outline"
-                      className="flex items-center gap-2"
+                      onClick={loadAndAnalyzeBinanceData} 
+                      disabled={binanceDataInfo.loading || selectedBinancePairs.length === 0 || isRealTimeActive}
+                      className="flex-1"
                     >
-                      <Square className="h-4 w-4" />
-                      Stop
+                      {binanceDataInfo.loading ? (
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      ) : (
+                        <Search className="h-4 w-4 mr-2" />
+                      )}
+                      {binanceDataInfo.loading ? 'Načítání...' : 'Single-shot analýza'}
                     </Button>
+                  )}
+                  
+                  {dataSource === 'manual' && (
+                    !isRealTimeActive ? (
+                      <Button 
+                        onClick={startRealTimeDetection}
+                        variant="outline"
+                        className="flex items-center gap-2"
+                        disabled={stream.isConnecting}
+                      >
+                        {stream.isConnecting ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Play className="h-4 w-4" />
+                        )}
+                        Real-time
+                      </Button>
+                    ) : (
+                      <Button 
+                        onClick={stopRealTimeDetection}
+                        variant="outline"
+                        className="flex items-center gap-2"
+                      >
+                        <Square className="h-4 w-4" />
+                        Stop
+                      </Button>
+                    )
                   )}
                 </div>
 
@@ -538,19 +817,13 @@ export default function Home() {
           </CardContent>
         </Card>
 
-        {/* Statistics Overview */}
-        <Statistics 
-          arbitrageHistory={arbitrageHistory}
-          totalRuns={totalRuns}
-          isRealTimeActive={isRealTimeActive}
-        />
-
         {/* Main Content Grid */}
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
           {/* Left Column - Forms and Tables */}
           <div className="space-y-6">
-            {/* Exchange Rate Input */}
-            <Card>
+            {/* Exchange Rate Input - Only show for manual data source */}
+            {dataSource === 'manual' && (
+              <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Plus className="h-5 w-5" />
@@ -612,9 +885,10 @@ export default function Home() {
             )}
           </CardContent>
         </Card>
+            )}
 
-        {/* Exchange Rates Table */}
-        {exchangeRates.length > 0 && (
+        {/* Exchange Rates Table - Only show for manual data source */}
+        {dataSource === 'manual' && exchangeRates.length > 0 && (
           <Card>
             <CardHeader>
               <div className="flex justify-between items-center">
@@ -765,6 +1039,129 @@ export default function Home() {
           </div>
         </div>
 
+        {/* Debug Panel for Exchange Rates */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Activity className="h-5 w-5" />
+              Debug Panel - Exchange Rates Data
+            </CardTitle>
+            <CardDescription>
+              Real-time information about data flow: Binance API → Frontend → UI
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="space-y-2">
+                <h4 className="text-sm font-medium">Načtené Exchange Rates</h4>
+                <p className="text-2xl font-mono font-bold text-blue-600">
+                  {dataSource === 'binance' ? 
+                    (binanceDataInfo.totalPairs * 2) : // Each pair generates 2 exchange rates (bid/ask)
+                    exchangeRates.length
+                  }
+                </p>
+                <p className="text-xs text-gray-500">
+                  {dataSource === 'binance' ? 
+                    `${binanceDataInfo.totalPairs} párů × 2 = ${binanceDataInfo.totalPairs * 2} rates` :
+                    'Manuálně zadané kurzy'
+                  }
+                </p>
+              </div>
+              
+              <div className="space-y-2">
+                <h4 className="text-sm font-medium">Poslední aktualizace</h4>
+                <p className="text-sm font-mono">
+                  {dataSource === 'binance' ? 
+                    binanceDataInfo.timestamp.toLocaleString('cs-CZ') :
+                    (exchangeRates.length > 0 ? 
+                      exchangeRates[exchangeRates.length - 1].timestamp.toLocaleString('cs-CZ') :
+                      'Žádná data'
+                    )
+                  }
+                </p>
+                <p className="text-xs text-gray-500">
+                  Cache: {dataSource === 'binance' ? (binanceDataInfo.cached ? 'Ano' : 'Ne') : 'N/A'}
+                </p>
+              </div>
+              
+              <div className="space-y-2">
+                <h4 className="text-sm font-medium">Data Flow Status</h4>
+                <div className="flex items-center gap-2">
+                  <div className={`w-3 h-3 rounded-full ${
+                    (dataSource === 'binance' && binanceDataInfo.totalPairs > 0) || 
+                    (dataSource === 'manual' && exchangeRates.length > 0) ? 
+                    'bg-green-500' : 'bg-gray-300'
+                  }`}></div>
+                  <span className="text-sm">
+                    {(dataSource === 'binance' && binanceDataInfo.totalPairs > 0) || 
+                     (dataSource === 'manual' && exchangeRates.length > 0) ? 
+                     'Data dostupná' : 'Žádná data'}
+                  </span>
+                </div>
+                <Badge variant={
+                  (dataSource === 'binance' && binanceDataInfo.totalPairs > 0) || 
+                  (dataSource === 'manual' && exchangeRates.length > 0) ? 
+                  'default' : 'outline'
+                } className="text-xs">
+                  {dataSource === 'binance' ? 'Binance API' : 'Manual Input'}
+                </Badge>
+              </div>
+            </div>
+            
+            {/* JSON Preview of First 5 Rates */}
+            <div className="space-y-2">
+              <h4 className="text-sm font-medium">První 5 Exchange Rates (JSON)</h4>
+              <div className="bg-gray-50 dark:bg-gray-900 rounded-md p-3 overflow-auto max-h-64">
+                <pre className="text-xs font-mono">
+                  {dataSource === 'binance' && arbitrageResult?.dataSource ? 
+                    JSON.stringify({
+                      source: 'binance',
+                      totalPairs: arbitrageResult.dataSource.totalPairs,
+                      processedSymbols: arbitrageResult.dataSource.processedSymbols,
+                      skippedSymbols: arbitrageResult.dataSource.skippedSymbols,
+                      cached: arbitrageResult.dataSource.cached,
+                      sampleMessage: 'Use /api/arbitrage GET endpoint to see actual rates'
+                    }, null, 2) :
+                    JSON.stringify(
+                      exchangeRates.slice(0, 5).map(rate => ({
+                        from: rate.from,
+                        to: rate.to,
+                        rate: rate.rate,
+                        timestamp: rate.timestamp.toISOString()
+                      })), 
+                      null, 
+                      2
+                    )
+                  }
+                </pre>
+              </div>
+            </div>
+            
+            {/* Binance Integration Status */}
+            <div className="border-t pt-4 space-y-2">
+              <h4 className="text-sm font-medium">Binance Integration Status</h4>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                <div>
+                  <span className="text-gray-500">Endpoint:</span>
+                  <p className="font-mono">api/v3/ticker/bookTicker</p>
+                </div>
+                <div>
+                  <span className="text-gray-500">Expected USDT pairs:</span>
+                  <p className="font-mono">~400-500</p>
+                </div>
+                <div>
+                  <span className="text-gray-500">Expected rates:</span>
+                  <p className="font-mono">~800-1000</p>
+                </div>
+                <div>
+                  <span className="text-gray-500">Symbol parsing:</span>
+                  <p className="font-mono">BTCUSDT → BTC/USDT</p>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
         {/* Monitoring Section */}
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
           {/* Algorithm Debug */}
@@ -779,6 +1176,25 @@ export default function Home() {
           {/* Arbitrage History Table */}
           <ArbitrageTable arbitrageHistory={arbitrageHistory} />
         </div>
+
+        {/* Statistics Overview */}
+        <Statistics 
+          arbitrageHistory={arbitrageHistory}
+          totalRuns={totalRuns}
+          isRealTimeActive={isRealTimeActive}
+        />
+
+        {/* Test Data Generator - only show for manual data source */}
+        <TestDataGenerator 
+          dataSource={dataSource}
+          onDataGenerated={(rates) => {
+            setExchangeRates(rates);
+            toast.success('Testovací data vygenerována!', {
+              description: `Přidáno ${rates.length} směnných kurzů`,
+            });
+          }}
+        />
+
       </div>
     </div>
   );

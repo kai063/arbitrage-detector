@@ -1,5 +1,5 @@
 import WebSocket from 'ws';
-import { BinanceTicker, ExchangeRate, ConnectionState, ConnectionStatus, RealTimeExchangeRates } from '@/lib/types';
+import { ExchangeRate, ConnectionState, ConnectionStatus, RealTimeExchangeRates } from '@/lib/types';
 
 export class BinanceWebSocketClient {
   private ws: WebSocket | null = null;
@@ -15,10 +15,13 @@ export class BinanceWebSocketClient {
   private readonly maxReconnectAttempts = 10;
   private readonly reconnectDelay = 5000; // 5 seconds
   private readonly updateInterval = 2000; // 2 seconds
-  private readonly binanceWsUrl = process.env.NEXT_PUBLIC_WS_URL || 'wss://stream.binance.com:9443/ws/!ticker@arr';
+  private readonly binanceWsUrl = 'wss://stream.binance.com:9443/stream';
+  private pendingUpdates: Map<string, ExchangeRate> = new Map();
+  private batchTimer: NodeJS.Timeout | null = null;
+  private readonly batchInterval = 1000; // 1 second
 
   constructor() {
-    this.startPeriodicUpdates();
+    this.startBatchProcessor();
   }
 
   public connect(): void {
@@ -35,7 +38,7 @@ export class BinanceWebSocketClient {
       this.setupEventHandlers();
     } catch (error) {
       console.error('Failed to create WebSocket connection:', error);
-      this.handleConnectionError(error);
+      this.handleConnectionError(error as Error);
     }
   }
 
@@ -47,9 +50,9 @@ export class BinanceWebSocketClient {
       this.reconnectTimer = null;
     }
 
-    if (this.updateTimer) {
-      clearInterval(this.updateTimer);
-      this.updateTimer = null;
+    if (this.batchTimer) {
+      clearInterval(this.batchTimer);
+      this.batchTimer = null;
     }
 
     if (this.ws) {
@@ -97,12 +100,32 @@ export class BinanceWebSocketClient {
       this.connectionStatus.reconnectAttempts = 0;
       this.connectionStatus.error = undefined;
       this.notifyStatusChange();
+      
+      // Subscribe to bookTicker stream for all symbols
+      const subscribeMessage = {
+        method: 'SUBSCRIBE',
+        params: ['!bookTicker'],
+        id: 1
+      };
+      
+      this.ws?.send(JSON.stringify(subscribeMessage));
+      console.log('Subscribed to !bookTicker stream');
     });
 
     this.ws.on('message', (data: WebSocket.Data) => {
       try {
-        const tickers: BinanceTicker[] = JSON.parse(data.toString());
-        this.processTickers(tickers);
+        const message = JSON.parse(data.toString());
+        
+        // Handle subscription response
+        if (message.result === null && message.id === 1) {
+          console.log('Successfully subscribed to bookTicker stream');
+          return;
+        }
+        
+        // Handle book ticker data
+        if (message.stream === '!bookTicker') {
+          this.processBookTicker(message.data);
+        }
       } catch (error) {
         console.error('Error parsing WebSocket message:', error);
       }
@@ -119,59 +142,74 @@ export class BinanceWebSocketClient {
     });
   }
 
-  private processTickers(tickers: BinanceTicker[]): void {
-    const now = new Date();
-    let updatedCount = 0;
+  private processBookTicker(ticker: { s: string; b: string; a: string }): void {
+    // Only process USDT pairs
+    if (!ticker.s.endsWith('USDT')) return;
 
-    for (const ticker of tickers) {
-      // Only process USDT pairs
-      if (!ticker.s.endsWith('USDT')) continue;
+    const symbol = ticker.s;
+    const baseCurrency = symbol.replace('USDT', '');
+    const quoteCurrency = 'USDT';
 
-      const baseCurrency = ticker.s.replace('USDT', '');
-      const quoteCurrency = 'USDT';
-
-      // Skip if no valid bid/ask prices
-      const bidPrice = parseFloat(ticker.b);
-      const askPrice = parseFloat(ticker.a);
-      
-      if (isNaN(bidPrice) || isNaN(askPrice) || bidPrice <= 0 || askPrice <= 0) {
-        continue;
-      }
-
-      // Create exchange rate entry
-      const exchangeRate: ExchangeRate = {
-        from: baseCurrency,
-        to: quoteCurrency,
-        bid: bidPrice,
-        ask: askPrice,
-        timestamp: now
-      };
-
-      this.exchangeRates.set(ticker.s, exchangeRate);
-      updatedCount++;
-
-      // Also create reverse rate (USDT to base currency)
-      const reverseRate: ExchangeRate = {
-        from: quoteCurrency,
-        to: baseCurrency,
-        bid: 1 / askPrice, // Reverse of ask price
-        ask: 1 / bidPrice, // Reverse of bid price
-        timestamp: now
-      };
-
-      this.exchangeRates.set(`${quoteCurrency}${baseCurrency}`, reverseRate);
+    // Skip if no valid bid/ask prices
+    const bidPrice = parseFloat(ticker.b);
+    const askPrice = parseFloat(ticker.a);
+    
+    if (isNaN(bidPrice) || isNaN(askPrice) || bidPrice <= 0 || askPrice <= 0) {
+      return;
     }
 
-    console.log(`Updated ${updatedCount} exchange rates from Binance`);
+    const now = new Date();
+
+    // Create exchange rate entry and add to pending updates
+    const exchangeRate: ExchangeRate = {
+      from: baseCurrency,
+      to: quoteCurrency,
+      bid: bidPrice,
+      ask: askPrice,
+      timestamp: now
+    };
+
+    this.pendingUpdates.set(symbol, exchangeRate);
+
+    // Also create reverse rate (USDT to base currency)
+    const reverseRate: ExchangeRate = {
+      from: quoteCurrency,
+      to: baseCurrency,
+      bid: 1 / askPrice, // Reverse of ask price
+      ask: 1 / bidPrice, // Reverse of bid price
+      timestamp: now
+    };
+
+    this.pendingUpdates.set(`${quoteCurrency}${baseCurrency}`, reverseRate);
   }
 
-  private startPeriodicUpdates(): void {
-    this.updateTimer = setInterval(() => {
-      if (this.exchangeRates.size > 0) {
-        const rates = this.getCurrentRates();
-        this.notifySubscribers(rates);
-      }
-    }, this.updateInterval);
+  private startBatchProcessor(): void {
+    this.batchTimer = setInterval(() => {
+      this.processBatchUpdates();
+    }, this.batchInterval);
+  }
+
+  private processBatchUpdates(): void {
+    if (this.pendingUpdates.size === 0) return;
+
+    let updatedCount = 0;
+    
+    // Apply all pending updates to main exchange rates map
+    this.pendingUpdates.forEach((rate, symbol) => {
+      this.exchangeRates.set(symbol, rate);
+      updatedCount++;
+    });
+
+    // Clear pending updates
+    this.pendingUpdates.clear();
+
+    if (updatedCount > 0) {
+      console.log(`Batch update: ${updatedCount} exchange rates updated`);
+      
+      // Notify subscribers with updated rates
+      const rates = this.getCurrentRates();
+      this.notifySubscribers(rates);
+    }
   }
 
   private notifySubscribers(rates: RealTimeExchangeRates): void {
@@ -189,7 +227,7 @@ export class BinanceWebSocketClient {
     console.log(`Connection status changed: ${this.connectionStatus.state}`);
   }
 
-  private handleConnectionError(error: any): void {
+  private handleConnectionError(error: Error): void {
     this.connectionStatus.state = ConnectionState.ERROR;
     this.connectionStatus.error = error.message || 'Unknown error';
     this.notifyStatusChange();

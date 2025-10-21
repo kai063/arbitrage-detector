@@ -4,7 +4,6 @@ import { useEffect, useRef, useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { Terminal, Play, Square, Trash2 } from 'lucide-react';
 
 export interface DebugLogEntry {
@@ -12,7 +11,7 @@ export interface DebugLogEntry {
   timestamp: Date;
   type: 'info' | 'iteration' | 'cycle' | 'error' | 'performance';
   message: string;
-  data?: any;
+  data?: unknown;
   executionTime?: number;
 }
 
@@ -26,7 +25,6 @@ export default function AlgorithmDebug({ isRunning, onToggleDebug }: AlgorithmDe
   const [isDebugEnabled, setIsDebugEnabled] = useState(false);
   const [currentIteration, setCurrentIteration] = useState(0);
   const [distances, setDistances] = useState<{ [currency: string]: number }>({});
-  const scrollAreaRef = useRef<HTMLDivElement>(null);
   const logContainerRef = useRef<HTMLDivElement>(null);
 
   const MAX_LOGS = 100;
@@ -237,7 +235,7 @@ export default function AlgorithmDebug({ isRunning, onToggleDebug }: AlgorithmDe
             </div>
           ) : (
             <div className="p-4 space-y-2">
-              {logs.map((log, index) => (
+              {logs.map((log) => (
                 <div key={log.id} className="flex items-start gap-3 text-sm">
                   <span className="text-xs text-gray-400 mt-0.5 w-16 shrink-0">
                     {log.timestamp.toLocaleTimeString('cs-CZ', { 
@@ -264,7 +262,7 @@ export default function AlgorithmDebug({ isRunning, onToggleDebug }: AlgorithmDe
                       </div>
                     )}
                     
-                    {log.data && (
+                    {log.data ? (
                       <details className="mt-1">
                         <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-700">
                           Zobrazit data
@@ -273,7 +271,7 @@ export default function AlgorithmDebug({ isRunning, onToggleDebug }: AlgorithmDe
                           {JSON.stringify(log.data, null, 2)}
                         </pre>
                       </details>
-                    )}
+                    ) : null}
                   </div>
                 </div>
               ))}

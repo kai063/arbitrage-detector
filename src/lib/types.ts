@@ -26,7 +26,14 @@ export interface ArbitrageResult {
   totalOpportunities: number;
   bestOpportunity: ArbitrageCycle | null;
   timestamp: Date;
-  type: 'manual' | 'realtime';
+  type: 'manual' | 'realtime' | 'binance';
+  dataSource?: {
+    totalPairs: number;
+    processedSymbols: number;
+    skippedSymbols: number;
+    cached: boolean;
+    source?: string;
+  };
 }
 
 export interface BinanceTicker {
@@ -76,7 +83,7 @@ export interface ArbitrageStream {
 
 export interface StreamMessage {
   type: 'rates' | 'arbitrage' | 'error' | 'status';
-  data: any;
+  data: unknown;
   timestamp: string;
 }
 

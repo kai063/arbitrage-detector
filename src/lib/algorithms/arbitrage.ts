@@ -18,6 +18,14 @@ export interface ArbitrageResult {
   totalOpportunities: number;
   bestOpportunity: ArbitrageCycle | null;
   timestamp: Date;
+  type?: 'manual' | 'realtime' | 'binance';
+  dataSource?: {
+    totalPairs: number;
+    processedSymbols: number;
+    skippedSymbols: number;
+    cached: boolean;
+    source?: string;
+  };
 }
 
 export interface Graph {
@@ -146,12 +154,13 @@ export class ArbitrageDetector {
   }
 
   private extractCycle(predecessors: { [currency: string]: string | null }, start: string): string[] {
-    const visited = new Set<string>();
     let current = start;
     
     // Find a node that's definitely in the cycle
     for (let i = 0; i < this.currencies.length && current; i++) {
-      current = predecessors[current];
+      const next = predecessors[current];
+      if (next === null || next === undefined) break;
+      current = next;
     }
 
     if (!current) return [];
@@ -172,7 +181,6 @@ export class ArbitrageDetector {
   private calculateCycleDetails(cycle: string[]): ArbitrageCycle {
     const rates: { from: string; to: string; rate: number }[] = [];
     let totalLogWeight = 0;
-    let totalVolume = 1;
 
     for (let i = 0; i < cycle.length - 1; i++) {
       const from = cycle[i];
@@ -182,7 +190,6 @@ export class ArbitrageDetector {
         const { weight, rate } = this.graph[from][to];
         rates.push({ from, to, rate });
         totalLogWeight += weight;
-        totalVolume *= rate;
       }
     }
 
@@ -257,26 +264,39 @@ export function detectCurrencyArbitrage(
   exchangeRates: ExchangeRate[], 
   settings?: AlgorithmSettings
 ): ArbitrageResult {
+  console.log('🔍 detectCurrencyArbitrage started:', {
+    inputRates: exchangeRates.length,
+    settings: settings
+  });
+  
   const detector = new ArbitrageDetector();
   
   // Apply currency filtering if specified
   let filteredRates = exchangeRates;
   if (settings?.selectedCurrencies && settings.selectedCurrencies.length > 0) {
+    const originalLength = filteredRates.length;
     filteredRates = exchangeRates.filter(rate => 
       settings.selectedCurrencies!.includes(rate.from) && 
       settings.selectedCurrencies!.includes(rate.to)
     );
+    console.log(`📊 Currency filtering: ${originalLength} → ${filteredRates.length} rates`);
   }
   
+  console.log('🏗️ Building graph with rates:', filteredRates.length);
   detector.buildGraph(filteredRates);
+  
+  console.log('🔄 Starting arbitrage cycle detection...');
   const result = detector.detectAllArbitrageCycles(settings);
+  console.log(`✅ Initial detection found ${result.cycles.length} cycles`);
   
   // Apply profit threshold filtering
   if (settings?.minProfitThreshold) {
     const thresholdPercent = settings.minProfitThreshold * 100;
+    const beforeFiltering = result.cycles.length;
     result.cycles = result.cycles.filter(cycle => 
       cycle.profitPercentage >= thresholdPercent
     );
+    console.log(`💰 Profit filtering (${thresholdPercent}%): ${beforeFiltering} → ${result.cycles.length} cycles`);
     result.totalOpportunities = result.cycles.length;
     result.bestOpportunity = result.cycles.length > 0 
       ? result.cycles.reduce((best, current) => 
@@ -287,9 +307,11 @@ export function detectCurrencyArbitrage(
   
   // Apply path length filtering
   if (settings?.maxPathLength) {
+    const beforeFiltering = result.cycles.length;
     result.cycles = result.cycles.filter(cycle => 
       cycle.currencies.length <= settings.maxPathLength!
     );
+    console.log(`📏 Path length filtering (max ${settings.maxPathLength}): ${beforeFiltering} → ${result.cycles.length} cycles`);
     result.totalOpportunities = result.cycles.length;
     result.bestOpportunity = result.cycles.length > 0 
       ? result.cycles.reduce((best, current) => 
@@ -297,6 +319,12 @@ export function detectCurrencyArbitrage(
         )
       : null;
   }
+  
+  console.log('🎯 Final result:', {
+    totalCycles: result.cycles.length,
+    bestProfit: result.bestOpportunity?.profitPercentage,
+    timestamp: result.timestamp
+  });
   
   return result;
 }
