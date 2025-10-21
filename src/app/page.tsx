@@ -65,6 +65,17 @@ export default function Home() {
   const [totalRuns, setTotalRuns] = useState(0);
   const [isDebugEnabled, setIsDebugEnabled] = useState(false);
   
+  // Available currencies from Binance
+  const [availableCurrencies, setAvailableCurrencies] = useState<{
+    base: string[];
+    quote: string[];
+    loading: boolean;
+  }>({
+    base: [],
+    quote: [],
+    loading: false
+  });
+  
   // Data source selection
   const [dataSource, setDataSource] = useState<DataSource>('manual');
   const [binanceDataInfo, setBinanceDataInfo] = useState<BinanceDataInfo>({
@@ -75,7 +86,6 @@ export default function Home() {
     timestamp: new Date(),
     loading: false
   });
-  const [selectedBinancePairs, setSelectedBinancePairs] = useState<string[]>([]);
 
   // Initialize arbitrage stream
   const stream = useArbitrageStream({
@@ -87,12 +97,35 @@ export default function Home() {
   // Algorithm settings state
   const [settings, setSettings] = useState<AlgorithmSettings>({
     maxIterations: 10,
-    minProfitThreshold: 0.5,
+    minProfitThreshold: 0,
     maxPathLength: 4,
     selectedCurrencies: [],
     autoRefresh: false
   });
 
+
+  // Fetch available currencies from Binance
+  const fetchAvailableCurrencies = useCallback(async () => {
+    setAvailableCurrencies(prev => ({ ...prev, loading: true }));
+    try {
+      const response = await fetch('/api/binance/pairs?quote=USDT&maxSpread=5');
+      const data = await response.json();
+      
+      if (data.success && data.data) {
+        setAvailableCurrencies({
+          base: data.data.baseCurrencies || [],
+          quote: data.data.quoteCurrencies || [],
+          loading: false
+        });
+      } else {
+        console.error('Failed to fetch available currencies:', data.error);
+        setAvailableCurrencies(prev => ({ ...prev, loading: false }));
+      }
+    } catch (error) {
+      console.error('Error fetching available currencies:', error);
+      setAvailableCurrencies(prev => ({ ...prev, loading: false }));
+    }
+  }, []);
 
   // Fetch available pairs for Binance data source
   const fetchAvailablePairs = async () => {
@@ -122,7 +155,7 @@ export default function Home() {
       // Update settings to use selected currencies
       const updatedSettings = {
         ...settings,
-        selectedCurrencies: selectedBinancePairs,
+        selectedCurrencies: [],
         useRealTimeData: false
       };
 
@@ -179,7 +212,7 @@ export default function Home() {
       setIsAnalyzing(false);
       setBinanceDataInfo(prev => ({ ...prev, loading: false }));
     }
-  }, [selectedBinancePairs, settings]);
+  }, [settings]);
 
   // Fetch available pairs when component mounts
   useEffect(() => {
@@ -237,17 +270,13 @@ export default function Home() {
       return;
     }
     
-    if (dataSource === 'binance') {
-      loadAndAnalyzeBinanceData();
-      return;
-    }
 
     setIsAnalyzing(true);
     setErrors([]);
 
     try {
       const requestBody = {
-        exchangeRates: useRealTime ? [] : exchangeRates.map(rate => ({
+        exchangeRates: (useRealTime || dataSource === 'binance') ? [] : exchangeRates.map(rate => ({
           from: rate.from,
           to: rate.to,
           rate: rate.rate,
@@ -304,7 +333,11 @@ export default function Home() {
     } finally {
       setIsAnalyzing(false);
     }
-  }, [dataSource, loadAndAnalyzeBinanceData, exchangeRates, settings.maxIterations, settings.minProfitThreshold, settings.maxPathLength, settings.selectedCurrencies]);
+  }, [dataSource, exchangeRates, settings.maxIterations, settings.minProfitThreshold, settings.maxPathLength, settings.selectedCurrencies]);
+
+  const runArbitrageDetection = useCallback(() => {
+    detectArbitrage(false);
+  }, [detectArbitrage]);
 
   const startRealTimeDetection = () => {
     setIsRealTimeActive(true);
@@ -356,6 +389,11 @@ export default function Home() {
       setIsRealTimeActive(false);
     }
   }, [stream.isConnected, isRealTimeActive]);
+
+  // Load available currencies on component mount
+  useEffect(() => {
+    fetchAvailableCurrencies();
+  }, [fetchAvailableCurrencies]);
 
   // Auto-refresh effect
   useEffect(() => {
@@ -513,37 +551,6 @@ export default function Home() {
             {/* Binance Data Source Controls */}
             {dataSource === 'binance' && (
               <div className="space-y-4 p-4 bg-blue-50 dark:bg-blue-950/20 rounded-lg border">
-                <div className="space-y-3">
-                  <label className="text-sm font-medium">Vybrané měnové páry</label>
-                  <Select 
-                    value={selectedBinancePairs.join(',')} 
-                    onValueChange={(value) => {
-                      const currencies = value ? value.split(',') : [];
-                      setSelectedBinancePairs(currencies);
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Vyberte měny">
-                        {selectedBinancePairs.length > 0 
-                          ? `${selectedBinancePairs.length} vybraných měn`
-                          : "Vyberte měny"
-                        }
-                      </SelectValue>
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="BTC,ETH,BNB,USDT,USDC">Základní sada (5 měn)</SelectItem>
-                      <SelectItem value="BTC,ETH,BNB,USDT,USDC,ADA,DOT">Rozšířená sada (7 měn)</SelectItem>
-                      <SelectItem value="BTC,ETH,BNB,USDT,USDC,ADA,DOT,SOL,MATIC,LINK">Plná sada (10 měn)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <div className="flex flex-wrap gap-1">
-                    {selectedBinancePairs.map(currency => (
-                      <Badge key={currency} variant="secondary" className="text-xs">
-                        {currency}
-                      </Badge>
-                    ))}
-                  </div>
-                </div>
 
                 {/* Binance Data Info */}
                 {(binanceDataInfo.totalPairs > 0 || binanceDataInfo.loading) && (
@@ -579,8 +586,8 @@ export default function Home() {
 
                 {/* Load & Analyze Button */}
                 <Button 
-                  onClick={loadAndAnalyzeBinanceData} 
-                  disabled={binanceDataInfo.loading || selectedBinancePairs.length === 0}
+                  onClick={runArbitrageDetection} 
+                  disabled={binanceDataInfo.loading}
                   className="w-full"
                 >
                   {binanceDataInfo.loading ? (
@@ -640,11 +647,11 @@ export default function Home() {
                   value={[settings.minProfitThreshold]}
                   onValueChange={(value) => setSettings(prev => ({ ...prev, minProfitThreshold: value[0] }))}
                   max={5}
-                  min={0.1}
+                  min={0}
                   step={0.1}
                   className="w-full"
                 />
-                <p className="text-xs text-gray-500">Minimální profit pro detekci (0.1-5%)</p>
+                <p className="text-xs text-gray-500">Minimální profit pro detekci (0-5%)</p>
               </div>
 
               {/* Max Path Length */}
@@ -687,9 +694,27 @@ export default function Home() {
                     </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="BTC,ETH,BNB,EUR,USDC">Základní sada (5 měn)</SelectItem>
-                    <SelectItem value="BTC,ETH,BNB,EUR,USDC,USDT,ADA">Rozšířená sada (7 měn)</SelectItem>
-                    <SelectItem value="BTC,ETH,BNB,EUR,USDC,USDT,ADA,DOT,SOL,MATIC">Plná sada (10 měn)</SelectItem>
+                    {availableCurrencies.loading ? (
+                      <SelectItem value="loading" disabled>Načítání měn...</SelectItem>
+                    ) : availableCurrencies.base.length > 0 ? (
+                      <>
+                        {/* Popular currencies first */}
+                        <SelectItem value="BTC,ETH,USDT,BNB,USDC">Top 5 měn</SelectItem>
+                        <SelectItem value="BTC,ETH,USDT,BNB,USDC,ADA,DOT,SOL">Top 8 měn</SelectItem>
+                        <SelectItem value="BTC,ETH,USDT,BNB,USDC,ADA,DOT,SOL,MATIC,AVAX">Top 10 měn</SelectItem>
+                        <SelectItem value={availableCurrencies.base.filter(c => ['USDT', 'BTC', 'ETH', 'BNB', 'USDC'].includes(c)).join(',') || 'USDT,BTC,ETH'}>
+                          Hlavní quote měny
+                        </SelectItem>
+                        <SelectItem value={availableCurrencies.base.slice(0, 20).join(',') || 'BTC,ETH,USDT'}>
+                          Top 20 měn z Binance
+                        </SelectItem>
+                        <SelectItem value={availableCurrencies.base.join(',') || 'BTC,ETH,USDT'}>
+                          Všechny měny ({availableCurrencies.base.length})
+                        </SelectItem>
+                      </>
+                    ) : (
+                      <SelectItem value="empty" disabled>Žádné měny k dispozici</SelectItem>
+                    )}
                   </SelectContent>
                 </Select>
                 <div className="flex flex-wrap gap-1">
@@ -750,8 +775,8 @@ export default function Home() {
                     </Button>
                   ) : (
                     <Button 
-                      onClick={loadAndAnalyzeBinanceData} 
-                      disabled={binanceDataInfo.loading || selectedBinancePairs.length === 0 || isRealTimeActive}
+                      onClick={runArbitrageDetection} 
+                      disabled={binanceDataInfo.loading || isRealTimeActive}
                       className="flex-1"
                     >
                       {binanceDataInfo.loading ? (
@@ -816,6 +841,14 @@ export default function Home() {
             </div>
           </CardContent>
         </Card>
+
+        {/* Algorithm Debug Monitor */}
+        <AlgorithmDebug 
+          isRunning={isAnalyzing || isRealTimeActive}
+          onToggleDebug={(enabled) => {
+            setIsDebugEnabled(enabled);
+          }}
+        />
 
         {/* Main Content Grid */}
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
@@ -1164,15 +1197,6 @@ export default function Home() {
 
         {/* Monitoring Section */}
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-          {/* Algorithm Debug */}
-          <AlgorithmDebug 
-            isRunning={isAnalyzing || isRealTimeActive}
-            onToggleDebug={(enabled) => {
-              setIsDebugEnabled(enabled);
-              // Update stream with new debug setting would require reinitializing
-            }}
-          />
-          
           {/* Arbitrage History Table */}
           <ArbitrageTable arbitrageHistory={arbitrageHistory} />
         </div>
