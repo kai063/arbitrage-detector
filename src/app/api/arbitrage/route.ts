@@ -92,13 +92,108 @@ export async function POST(request: NextRequest): Promise<NextResponse<Arbitrage
         );
       }
 
+      // Debug: Log total rates from Binance conversion
+      console.log('📊 CURRENCY FILTERING DEBUG - Initial Binance Data:', {
+        totalRatesFromBinance: conversionResult.legacyRates.length,
+        selectedCurrenciesCount: settings.selectedCurrencies.length,
+        selectedCurrencies: settings.selectedCurrencies.slice(0, 20), // Show first 20 for readability
+        sampleInitialRates: conversionResult.legacyRates.slice(0, 10).map(r => `${r.from}->${r.to} (${r.rate})`)
+      });
+
+      // Get unique currencies in the initial data for comparison
+      const initialUniqueCurrencies = Array.from(new Set([
+        ...conversionResult.legacyRates.map(r => r.from),
+        ...conversionResult.legacyRates.map(r => r.to)
+      ])).sort();
+
+      console.log('💱 CURRENCY FILTERING DEBUG - Available Currencies:', {
+        totalUniqueCurrenciesInBinanceData: initialUniqueCurrencies.length,
+        availableCurrencies: initialUniqueCurrencies.slice(0, 50), // Show first 50
+        allAvailableCurrencies: initialUniqueCurrencies
+      });
+
       // Filter rates based on selected currencies if specified
       let filteredRates = conversionResult.legacyRates;
       if (settings.selectedCurrencies.length > 0) {
+        console.log('🔍 CURRENCY FILTERING DEBUG - Starting Filter Process:', {
+          beforeFilteringCount: conversionResult.legacyRates.length,
+          filterCriteria: 'Both FROM and TO currencies must be in selectedCurrencies'
+        });
+
+        // Always include USDT if it exists in the data for better connectivity
+        const effectiveSelectedCurrencies = new Set(settings.selectedCurrencies);
+        if (initialUniqueCurrencies.includes('USDT')) {
+          effectiveSelectedCurrencies.add('USDT');
+        }
+
+        // More intelligent filtering: include rates where at least one currency is selected
+        // This allows for arbitrage paths through USDT or other hub currencies
         filteredRates = conversionResult.legacyRates.filter(rate => 
-          settings.selectedCurrencies.includes(rate.from) && 
-          settings.selectedCurrencies.includes(rate.to)
+          effectiveSelectedCurrencies.has(rate.from) || 
+          effectiveSelectedCurrencies.has(rate.to)
         );
+
+        // If still too few rates after inclusive filtering, try more restrictive approaches
+        if (filteredRates.length < 10 && settings.selectedCurrencies.length > 0) {
+          console.log('📈 Using fallback filtering strategy - including selected currencies + their USDT pairs');
+          filteredRates = conversionResult.legacyRates.filter(rate => {
+            const fromSelected = settings.selectedCurrencies.includes(rate.from);
+            const toSelected = settings.selectedCurrencies.includes(rate.to);
+            const involvesBoth = fromSelected && toSelected;
+            const involvesUSDT = (rate.from === 'USDT' || rate.to === 'USDT') && (fromSelected || toSelected);
+            return involvesBoth || involvesUSDT;
+          });
+        }
+
+        // Get unique currencies in filtered data
+        const filteredUniqueCurrencies = Array.from(new Set([
+          ...filteredRates.map(r => r.from),
+          ...filteredRates.map(r => r.to)
+        ])).sort();
+
+        // Find which selected currencies are actually present in Binance data
+        const selectedCurrenciesFoundInBinance = settings.selectedCurrencies.filter(currency => 
+          initialUniqueCurrencies.includes(currency)
+        );
+
+        const selectedCurrenciesNotFound = settings.selectedCurrencies.filter(currency => 
+          !initialUniqueCurrencies.includes(currency)
+        );
+
+        console.log('🎯 CURRENCY FILTERING DEBUG - Filter Results:', {
+          ratesAfterFiltering: filteredRates.length,
+          reductionPercentage: ((conversionResult.legacyRates.length - filteredRates.length) / conversionResult.legacyRates.length * 100).toFixed(2) + '%',
+          uniqueCurrenciesInFilteredData: filteredUniqueCurrencies.length,
+          actualFilteredCurrencies: filteredUniqueCurrencies,
+          selectedCurrenciesFoundInBinance: selectedCurrenciesFoundInBinance.length,
+          foundCurrencies: selectedCurrenciesFoundInBinance,
+          selectedCurrenciesNotFoundInBinance: selectedCurrenciesNotFound.length,
+          notFoundCurrencies: selectedCurrenciesNotFound.slice(0, 20), // Show first 20
+          sampleFilteredRates: filteredRates.slice(0, 10).map(r => `${r.from}->${r.to} (${r.rate})`),
+        });
+
+        // Additional analysis: Check if the issue is USDT-only pairs
+        const usdtPairAnalysis = {
+          totalBinanceRatesWithUSdt: conversionResult.legacyRates.filter(r => r.from === 'USDT' || r.to === 'USDT').length,
+          totalBinanceRatesWithoutUSdt: conversionResult.legacyRates.filter(r => r.from !== 'USDT' && r.to !== 'USDT').length,
+          filteredRatesWithUSdt: filteredRates.filter(r => r.from === 'USDT' || r.to === 'USDT').length,
+          filteredRatesWithoutUSdt: filteredRates.filter(r => r.from !== 'USDT' && r.to !== 'USDT').length,
+        };
+
+        console.log('💰 CURRENCY FILTERING DEBUG - USDT Pair Analysis:', {
+          ...usdtPairAnalysis,
+          explanation: 'Binance primarily provides USDT pairs, not direct cross-currency pairs'
+        });
+
+        // Check for potential cross-currency arbitrage paths
+        const crossCurrencyPairs = filteredRates.filter(r => r.from !== 'USDT' && r.to !== 'USDT');
+        console.log('🔄 CURRENCY FILTERING DEBUG - Cross-Currency Opportunities:', {
+          directCrossCurrencyPairs: crossCurrencyPairs.length,
+          sampleCrossPairs: crossCurrencyPairs.slice(0, 5).map(r => `${r.from}->${r.to}`),
+          potentialArbitrageNote: crossCurrencyPairs.length === 0 ? 
+            'No direct cross-currency pairs found - arbitrage would need to go through USDT' : 
+            `${crossCurrencyPairs.length} direct cross-currency pairs available`
+        });
       }
 
       // Detect arbitrage with Binance data

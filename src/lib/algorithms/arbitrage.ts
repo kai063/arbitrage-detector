@@ -63,11 +63,25 @@ export class ArbitrageDetector {
     const processedCycles = new Set<string>();
     const maxIterations = settings?.maxIterations || this.currencies.length;
 
+    console.log('🔍 ArbitrageDetector: Starting cycle detection:', {
+      totalCurrencies: this.currencies.length,
+      totalExchangeRates: this.exchangeRates.length,
+      maxIterations,
+      sampleCurrencies: this.currencies.slice(0, 10),
+      settings
+    });
+
     // Run Bellman-Ford from each currency to find all possible cycles
-    // Limit iterations based on settings
-    const currenciesToCheck = this.currencies.slice(0, Math.min(maxIterations, this.currencies.length));
+    // Use maxIterations for the algorithm itself, not for limiting starting currencies
+    const currenciesToCheck = this.currencies;
     
+    let processedStarts = 0;
     for (const startCurrency of currenciesToCheck) {
+      processedStarts++;
+      if (processedStarts % 50 === 0 || processedStarts <= 5) {
+        console.log(`🔄 Processing start currency ${processedStarts}/${currenciesToCheck.length}: ${startCurrency}, cycles found so far: ${cycles.length}`);
+      }
+      
       const foundCycles = this.findCyclesFromStart(startCurrency, settings);
       
       for (const cycle of foundCycles) {
@@ -75,6 +89,7 @@ export class ArbitrageDetector {
         if (!processedCycles.has(cycleKey)) {
           cycles.push(cycle);
           processedCycles.add(cycleKey);
+          console.log(`✨ Found new arbitrage cycle: ${cycle.currencies.join(' → ')} (${cycle.profitPercentage.toFixed(4)}%)`);
         }
       }
     }
@@ -84,6 +99,13 @@ export class ArbitrageDetector {
           current.profitPercentage > best.profitPercentage ? current : best
         )
       : null;
+
+    console.log('✅ ArbitrageDetector: Cycle detection completed:', {
+      totalCyclesFound: cycles.length,
+      totalStartCurrenciesProcessed: processedStarts,
+      bestProfitPercentage: bestOpportunity?.profitPercentage,
+      bestCycle: bestOpportunity?.currencies
+    });
 
     return {
       cycles,
@@ -105,8 +127,9 @@ export class ArbitrageDetector {
     }
     distances[startCurrency] = 0;
 
-    // Relax edges V-1 times
-    for (let i = 0; i < this.currencies.length - 1; i++) {
+    // Relax edges V-1 times, but respect maxIterations setting
+    const actualMaxIterations = settings?.maxIterations ? Math.min(settings.maxIterations, this.currencies.length - 1) : this.currencies.length - 1;
+    for (let i = 0; i < actualMaxIterations; i++) {
       let updated = false;
       for (const from of this.currencies) {
         if (!this.graph[from] || distances[from] === Infinity) continue;
