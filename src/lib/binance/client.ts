@@ -264,17 +264,19 @@ export class BinanceWebSocketClient {
     }, delay);
   }
 
-  // Convert to legacy format for backward compatibility
+  // Convert to legacy format for arbitrage detection
   public getLegacyRates(): Array<{ from: string; to: string; rate: number; timestamp: Date }> {
     const legacyRates: Array<{ from: string; to: string; rate: number; timestamp: Date }> = [];
-    
+
     this.exchangeRates.forEach(rate => {
-      // Use mid price (average of bid and ask) for legacy compatibility
-      const midPrice = (rate.bid + rate.ask) / 2;
+      // CRITICAL: Use ask price for arbitrage detection
+      // When converting A→B, we use ask price (buying B at market ask)
+      // This ensures consistency with the arbitrage algorithm that expects ask prices
+      const rateForArbitrage = rate.ask;
       legacyRates.push({
         from: rate.from,
         to: rate.to,
-        rate: midPrice,
+        rate: rateForArbitrage,
         timestamp: rate.timestamp
       });
     });

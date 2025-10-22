@@ -94,12 +94,11 @@ export function convertToGraph(
 
       exchangeRates.push(primaryRate);
 
-      // Create legacy rate using mid price
-      const midPrice = (bidPrice + askPrice) / 2;
+      // Create legacy rate using ask price (we're buying the quote currency)
       legacyRates.push({
         from: baseCurrency,
         to: quoteCurrency,
-        rate: midPrice,
+        rate: askPrice,
         timestamp
       });
 
@@ -118,12 +117,12 @@ export function convertToGraph(
 
         exchangeRates.push(reverseRate);
 
-        // Create reverse legacy rate
-        const reverseMidPrice = 1 / midPrice;
+        // Create reverse legacy rate using 1/bid price (we're selling the base currency)
+        const reverseLegacyRate = 1 / bidPrice;
         legacyRates.push({
           from: quoteCurrency,
           to: baseCurrency,
-          rate: reverseMidPrice,
+          rate: reverseLegacyRate,
           timestamp
         });
       }
