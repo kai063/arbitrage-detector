@@ -13,7 +13,7 @@ import { Switch } from '@/components/ui/switch';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Label } from '@/components/ui/label';
 import { Progress } from '@/components/ui/progress';
-import { ExchangeRate, ArbitrageResult } from '@/lib/algorithms/arbitrage';
+import { ExchangeRate, ArbitrageResult } from '@/lib/algorithms/arbitrage-dual-algorithm';
 import { AlertCircle, Plus, Search, Trash2, Settings, Play, Square, Wifi, WifiOff, Activity, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { ThemeToggle } from '@/components/ThemeToggle';
@@ -37,6 +37,8 @@ interface AlgorithmSettings {
   maxPathLength: number;
   selectedCurrencies: string[];
   autoRefresh: boolean;
+  algorithm: 'bellman-ford' | 'floyd-warshall'; 
+  bellmanFordStartCurrencies: string[];         
 }
 
 type DataSource = 'manual' | 'binance';
@@ -162,18 +164,28 @@ export default function Home() {
     minProfitThreshold: 0,
     maxPathLength: 4,
     selectedCurrencies: [],
-    autoRefresh: false
+    autoRefresh: false,
+    algorithm: 'floyd-warshall',         
+    bellmanFordStartCurrencies: []         
   });
 
   // Calculate optimal max iterations based on currency count
-  const getOptimalMaxIterations = useCallback((currencyCount: number) => {
-    if (currencyCount <= 5) return 10;
-    if (currencyCount <= 20) return 50;
-    if (currencyCount <= 50) return 100;
-    if (currencyCount <= 100) return 200;
-    return Math.min(currencyCount * 2, 500); // Cap at 500 iterations
-  }, []);
+    const getOptimalMaxIterations = useCallback((currencyCount: number) => {
+      // For Bellman-Ford: V-1 iterations where V is number of vertices
+      if (currencyCount === 0) return 10;
+      return currencyCount - 1;
+    }, []);
 
+// Auto-adjust max iterations when currencies or algorithm changes
+useEffect(() => {
+  const currencyCount = settings.selectedCurrencies.length || availableCurrencies.base.length;
+  const optimal = getOptimalMaxIterations(currencyCount);
+  
+  // Update max iterations to optimal value for Bellman-Ford
+  if (settings.algorithm === 'bellman-ford' && settings.maxIterations !== optimal) {
+    setSettings(prev => ({ ...prev, maxIterations: optimal }));
+  }
+}, [settings.selectedCurrencies, settings.algorithm, settings.maxIterations, availableCurrencies.base.length, getOptimalMaxIterations]);
 
   // Fetch available currencies from Binance
   const fetchAvailableCurrencies = useCallback(async () => {
@@ -267,13 +279,26 @@ export default function Home() {
   };
 
   const detectArbitrage = useCallback(async (useRealTime = false) => {
+    console.log('🚀 FRONTEND DEBUG - detectArbitrage called:', {
+      useRealTime,
+      dataSource,
+      exchangeRatesCount: exchangeRates.length,
+      settings: {
+        algorithm: settings.algorithm,
+        maxIterations: settings.maxIterations,
+        selectedCurrencies: settings.selectedCurrencies.length,
+        selectedCurrenciesList: settings.selectedCurrencies
+      }
+    });
+
     // Check data source and requirements
     if (dataSource === 'manual' && !useRealTime && exchangeRates.length < 3) {
+      console.log('❌ FRONTEND: Insufficient manual exchange rates');
       setErrors(['Pro detekci arbitráže jsou potřeba alespoň 3 směnné kurzy']);
       return;
     }
-    
 
+    console.log('✅ FRONTEND: Starting analysis...');
     setIsAnalyzing(true);
     setErrors([]);
     setAnalysisProgress(0);
@@ -303,7 +328,7 @@ export default function Home() {
     }
 
     try {
-      const requestBody = {
+     const requestBody = {
         exchangeRates: (useRealTime || dataSource === 'binance') ? [] : exchangeRates.map(rate => ({
           from: rate.from,
           to: rate.to,
@@ -312,12 +337,22 @@ export default function Home() {
         })),
         settings: {
           maxIterations: settings.maxIterations,
-          minProfitThreshold: settings.minProfitThreshold / 100, // Convert percentage to decimal
+          minProfitThreshold: settings.minProfitThreshold / 100,
           maxPathLength: settings.maxPathLength,
           selectedCurrencies: settings.selectedCurrencies,
-          useRealTimeData: useRealTime
+          useRealTimeData: useRealTime,
+          algorithm: settings.algorithm,                          // ADD THIS
+          bellmanFordStartCurrencies: settings.bellmanFordStartCurrencies  // ADD THIS
         }
       };
+
+      console.log('📡 FRONTEND: Making API request to /api/arbitrage:', {
+        method: 'POST',
+        requestBody: {
+          ...requestBody,
+          exchangeRates: `${requestBody.exchangeRates.length} rates`
+        }
+      });
 
       const response = await fetch('/api/arbitrage', {
         method: 'POST',
@@ -325,7 +360,33 @@ export default function Home() {
         body: JSON.stringify(requestBody)
       });
 
+      console.log('📡 FRONTEND: API response received:', {
+        status: response.status,
+        statusText: response.statusText,
+        ok: response.ok
+      });
+
       const data = await response.json();
+      console.log('📡 FRONTEND: API data parsed:', {
+        success: data.success,
+        hasData: !!data.data,
+        error: data.error,
+        cyclesFound: data.data?.cycles?.length,
+        executionTime: data.data?.executionTime,
+        debug: data.debug
+      });
+
+      // Log detailed debug information if available
+      if (data.debug) {
+        console.log('🔍 SERVER DEBUG INFO:', data.debug);
+        console.log('🔍 SETTINGS DETAILS:', {
+          algorithm: data.debug.settingsReceived?.algorithm,
+          maxIterations: data.debug.settingsReceived?.maxIterations,
+          minProfitThreshold: data.debug.settingsReceived?.minProfitThreshold,
+          selectedCurrencies: data.debug.settingsReceived?.selectedCurrencies?.length || 0,
+          bellmanFordStartCurrencies: data.debug.settingsReceived?.bellmanFordStartCurrencies?.length || 0
+        });
+      }
       
       if (data.success) {
         setArbitrageResult(data.data);
@@ -419,9 +480,10 @@ export default function Home() {
         setAnalysisProgress(0);
       }, 500);
     }
-  }, [dataSource, exchangeRates, settings.maxIterations, settings.minProfitThreshold, settings.maxPathLength, settings.selectedCurrencies, addDebugLog]);
+  }, [dataSource, exchangeRates, settings.maxIterations, settings.minProfitThreshold, settings.maxPathLength, settings.selectedCurrencies, settings.algorithm, settings.bellmanFordStartCurrencies, addDebugLog]);
 
   const runArbitrageDetection = useCallback(() => {
+    console.log('🖱️ FRONTEND: Start button clicked - calling detectArbitrage(false)');
     detectArbitrage(false);
   }, [detectArbitrage]);
 
@@ -678,7 +740,7 @@ export default function Home() {
           </CardContent>
         </Card>
 
-        {/* Algorithm Settings */}
+       {/* Algorithm Settings */}
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -686,10 +748,48 @@ export default function Home() {
               Nastavení algoritmu
             </CardTitle>
             <CardDescription>
-              Konfigurace parametrů pro Bellman-Ford algoritmus
+              Konfigurace parametrů pro detekci arbitráže
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
+            {/* Algorithm Selection */}
+            <div className="space-y-3">
+              <Label className="text-sm font-medium">Algoritmus</Label>
+              <Select 
+                value={settings.algorithm} 
+                onValueChange={(value: 'bellman-ford' | 'floyd-warshall') => {
+                  const currencyCount = settings.selectedCurrencies.length || availableCurrencies.base.length;
+                  const optimal = getOptimalMaxIterations(currencyCount);
+                  setSettings(prev => ({ 
+                    ...prev, 
+                    algorithm: value,
+                    maxIterations: value === 'bellman-ford' ? optimal : prev.maxIterations,
+                    bellmanFordStartCurrencies: value === 'bellman-ford' && prev.bellmanFordStartCurrencies.length === 0 
+                      ? (settings.selectedCurrencies.slice(0, 3) || ['USDT', 'BTC', 'ETH'])
+                      : prev.bellmanFordStartCurrencies
+                  }));
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Vyberte algoritmus" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="floyd-warshall">
+                    <div className="flex flex-col">
+                      <span>Floyd-Warshall</span>
+                      <span className="text-xs text-gray-500">Najde všechny cykly (O(V³))</span>
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="bellman-ford">
+                    <div className="flex flex-col">
+                      <span>Bellman-Ford</span>
+                      <span className="text-xs text-gray-500">Hledání z vybraných bodů (O(V²E))</span>
+                    </div>
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
             {/* Settings Grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               
@@ -697,17 +797,28 @@ export default function Home() {
               <div className="space-y-3">
                 <div className="flex justify-between items-center">
                   <label className="text-sm font-medium">Max iterace</label>
-                  <Badge variant="outline">{settings.maxIterations}</Badge>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline">{settings.maxIterations}</Badge>
+                    {settings.algorithm === 'bellman-ford' && (
+                      <Badge variant="secondary" className="text-xs">
+                        Opt: {getOptimalMaxIterations(settings.selectedCurrencies.length || availableCurrencies.base.length)}
+                      </Badge>
+                    )}
+                  </div>
                 </div>
                 <Slider
                   value={[settings.maxIterations]}
                   onValueChange={(value) => setSettings(prev => ({ ...prev, maxIterations: value[0] }))}
-                  max={50}
+                  max={Math.max(500, (settings.selectedCurrencies.length || availableCurrencies.base.length) * 2)}
                   min={1}
                   step={1}
                   className="w-full"
                 />
-                <p className="text-xs text-gray-500">Počet iterací algoritmu (1-50)</p>
+                <p className="text-xs text-gray-500">
+                  {settings.algorithm === 'bellman-ford' 
+                    ? `Pro ${settings.selectedCurrencies.length || availableCurrencies.base.length} měn je optimální ${getOptimalMaxIterations(settings.selectedCurrencies.length || availableCurrencies.base.length)} iterací`
+                    : 'Počet iterací pro Floyd-Warshall'}
+                </p>
               </div>
 
               {/* Min Profit Threshold */}
@@ -736,193 +847,174 @@ export default function Home() {
                 <Slider
                   value={[settings.maxPathLength]}
                   onValueChange={(value) => setSettings(prev => ({ ...prev, maxPathLength: value[0] }))}
-                  max={6}
+                  max={10}
                   min={2}
                   step={1}
                   className="w-full"
                 />
-                <p className="text-xs text-gray-500">Maximální délka arbitrážní cesty (2-6)</p>
+                <p className="text-xs text-gray-500">Maximální délka arbitrážní cesty (2-10)</p>
               </div>
             </div>
 
-            {/* Currency Selection and Controls */}
+            {/* Currency Selection and Bellman-Ford Starting Points */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               
-              {/* Currency Selection */}
+              {/* Currency Selection - Direct Input */}
               <div className="space-y-3">
-                <label className="text-sm font-medium">Měnové páry</label>
-                <Select 
-                  value={settings.selectedCurrencies.join(',')} 
-                  onValueChange={(value) => {
-                    const currencies = value ? value.split(',') : [];
-                    const optimalIterations = getOptimalMaxIterations(currencies.length);
+                <label className="text-sm font-medium">Vybrané měny (čárkou oddělené)</label>
+                <Input
+                  placeholder="např. BTC,ETH,USDT,BNB nebo ponechte prázdné pro všechny"
+                  value={settings.selectedCurrencies.join(',')}
+                  onChange={(e) => {
+                    const input = e.target.value.trim();
+                    const currencies = input ? input.split(',').map(c => c.trim().toUpperCase()).filter(c => c) : [];
                     setSettings(prev => ({ 
                       ...prev, 
                       selectedCurrencies: currencies,
-                      maxIterations: Math.max(prev.maxIterations, optimalIterations)
                     }));
                   }}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Vyberte měny">
-                      {settings.selectedCurrencies.length > 0 
-                        ? `${settings.selectedCurrencies.length} vybraných měn`
-                        : "Vyberte měny"
-                      }
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    {availableCurrencies.loading ? (
-                      <SelectItem value="loading" disabled>Načítání měn...</SelectItem>
-                    ) : availableCurrencies.base.length > 0 ? (
-                      <>
-                        {/* Popular currencies first */}
-                        <SelectItem value="BTC,ETH,USDT,BNB,USDC">Top 5 měn</SelectItem>
-                        <SelectItem value="BTC,ETH,USDT,BNB,USDC,ADA,DOT,SOL">Top 8 měn</SelectItem>
-                        <SelectItem value="BTC,ETH,USDT,BNB,USDC,ADA,DOT,SOL,MATIC,AVAX">Top 10 měn</SelectItem>
-                        <SelectItem value={availableCurrencies.base.filter(c => ['USDT', 'BTC', 'ETH', 'BNB', 'USDC'].includes(c)).join(',') || 'USDT,BTC,ETH'}>
-                          Hlavní quote měny
-                        </SelectItem>
-                        <SelectItem value={availableCurrencies.base.slice(0, 20).join(',') || 'BTC,ETH,USDT'}>
-                          Top 20 měn z Binance
-                        </SelectItem>
-                        <SelectItem value={availableCurrencies.base.join(',') || 'BTC,ETH,USDT'}>
-                          Všechny měny ({availableCurrencies.base.length})
-                        </SelectItem>
-                      </>
-                    ) : (
-                      <SelectItem value="empty" disabled>Žádné měny k dispozici</SelectItem>
-                    )}
-                  </SelectContent>
-                </Select>
-                <CurrencyPairDisplay 
-                  selectedCurrencies={settings.selectedCurrencies}
+                  className="font-mono"
                 />
+                <div className="text-xs text-gray-500">
+                  {settings.selectedCurrencies.length === 0 
+                    ? "Prázdné = použije všechny dostupné měny"
+                    : `${settings.selectedCurrencies.length} měn: ${settings.selectedCurrencies.slice(0, 10).join(', ')}${settings.selectedCurrencies.length > 10 ? '...' : ''}`
+                  }
+                </div>
               </div>
 
-              {/* Auto-refresh and Controls */}
-              <div className="space-y-4">
-                {dataSource === 'manual' ? (
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <label className="text-sm font-medium">Auto-refresh</label>
-                      <p className="text-xs text-gray-500">Automatická detekce každých 5s</p>
-                    </div>
-                    <Switch
-                      checked={settings.autoRefresh}
-                      onCheckedChange={(checked) => setSettings(prev => ({ ...prev, autoRefresh: checked }))}
-                    />
+              {/* Bellman-Ford Starting Currencies - ONLY SHOW WHEN BELLMAN-FORD IS SELECTED */}
+              {settings.algorithm === 'bellman-ford' && (
+                <div className="space-y-3">
+                  <label className="text-sm font-medium">
+                    Počáteční měny pro Bellman-Ford (čárkou oddělené)
+                  </label>
+                  <Input
+                    placeholder="např. USDT,BTC,ETH nebo ponechte prázdné pro auto"
+                    value={settings.bellmanFordStartCurrencies.join(',')}
+                    onChange={(e) => {
+                      const input = e.target.value.trim();
+                      const currencies = input ? input.split(',').map(c => c.trim().toUpperCase()).filter(c => c) : [];
+                      setSettings(prev => ({ 
+                        ...prev, 
+                        bellmanFordStartCurrencies: currencies 
+                      }));
+                    }}
+                    className="font-mono"
+                  />
+                  <div className="text-xs text-gray-500">
+                    {settings.bellmanFordStartCurrencies.length === 0 
+                      ? "Prázdné = automaticky vybere rovnoměrně rozložené začínající měny"
+                      : `${settings.bellmanFordStartCurrencies.length} začínajících měn: ${settings.bellmanFordStartCurrencies.join(', ')}`
+                    }
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Algorithm Info */}
+            <Alert>
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>
+                {settings.algorithm === 'floyd-warshall' ? (
+                  <div>
+                    <strong>Floyd-Warshall:</strong> Najde všechny arbitrážní cykly najednou. 
+                    Časová složitost O(V³) = {Math.pow(settings.selectedCurrencies.length || 10, 3).toLocaleString()} operací.
                   </div>
                 ) : (
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <label className="text-sm font-medium">Continuous Monitoring</label>
-                      <p className="text-xs text-gray-500">Real-time stream s automatickou detekcí</p>
-                    </div>
-                    <Switch
-                      checked={isRealTimeActive}
-                      onCheckedChange={(checked) => {
-                        if (checked) {
-                          startRealTimeDetection();
-                        } else {
-                          stopRealTimeDetection();
-                        }
-                      }}
-                    />
+                  <div>
+                    <strong>Bellman-Ford:</strong> Hledá cykly z {settings.bellmanFordStartCurrencies.length || 'automaticky vybraných'} počátečních bodů. 
+                    Rychlejší pro cílené hledání. Max iterace = V-1 = {getOptimalMaxIterations(settings.selectedCurrencies.length || availableCurrencies.base.length)}.
                   </div>
                 )}
+              </AlertDescription>
+            </Alert>
 
-                {/* Detection Controls */}
-                <div className="flex gap-2">
-                  {dataSource === 'manual' ? (
-                    <Button 
-                      onClick={() => detectArbitrage(false)} 
-                      disabled={isAnalyzing || (exchangeRates.length < 3 && !isRealTimeActive)}
-                      className="flex-1"
-                    >
-                      {isAnalyzing ? (
-                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                      ) : (
-                        <Search className="h-4 w-4 mr-2" />
-                      )}
-                      {isAnalyzing ? 'Analyzuji...' : 'Detekovat arbitráž'}
-                    </Button>
+            {/* Start Analysis Controls */}
+            <div className="space-y-4 p-4 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950/20 dark:to-indigo-950/20 rounded-lg border">
+              <div className="flex flex-col sm:flex-row gap-4">
+                <Button 
+                  onClick={runArbitrageDetection}
+                  disabled={isAnalyzing || (dataSource === 'manual' && exchangeRates.length < 3)}
+                  size="lg"
+                  className="flex-1"
+                >
+                  {isAnalyzing ? (
+                    <>
+                      <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+                      Analyzuji...
+                    </>
                   ) : (
-                    <div className="flex-1 space-y-2">
-                      <Button 
-                        onClick={runArbitrageDetection} 
-                        disabled={isAnalyzing || isRealTimeActive}
-                        className="w-full"
-                      >
-                        {isAnalyzing ? (
-                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                        ) : (
-                          <Search className="h-4 w-4 mr-2" />
-                        )}
-                        {isAnalyzing ? 'Analyzuji...' : 'Single-shot analýza'}
-                      </Button>
-                      {isAnalyzing && analysisProgress > 0 && (
-                        <div className="space-y-1">
-                          <div className="flex justify-between items-center text-xs text-gray-600">
-                            <span>Průběh analýzy</span>
-                            <span>{Math.round(analysisProgress)}%</span>
-                          </div>
-                          <Progress value={analysisProgress} className="h-2" />
-                        </div>
-                      )}
-                    </div>
+                    <>
+                      <Play className="h-5 w-5 mr-2" />
+                      Spustit analýzu arbitráže
+                    </>
                   )}
-                  
-                  {dataSource === 'manual' && (
-                    !isRealTimeActive ? (
-                      <Button 
-                        onClick={startRealTimeDetection}
-                        variant="outline"
-                        className="flex items-center gap-2"
-                        disabled={stream.isConnecting}
-                      >
-                        {stream.isConnecting ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                          <Play className="h-4 w-4" />
-                        )}
-                        Real-time
-                      </Button>
-                    ) : (
-                      <Button 
-                        onClick={stopRealTimeDetection}
-                        variant="outline"
-                        className="flex items-center gap-2"
-                      >
-                        <Square className="h-4 w-4" />
-                        Stop
-                      </Button>
-                    )
-                  )}
-                </div>
-
-                {/* Real-time Status */}
-                {isRealTimeActive && (
-                  <div className="flex items-center gap-2 text-sm">
-                    <div className={`w-2 h-2 rounded-full animate-pulse ${
-                      stream.isConnected ? 'bg-green-500' : 'bg-yellow-500'
-                    }`}></div>
-                    <span className={stream.isConnected ? 'text-green-600' : 'text-yellow-600'}>
-                      {stream.isConnected ? 'Real-time aktivní' : 'Připojování...'}
-                    </span>
-                    {realTimeData && (
-                      <Badge variant="outline" className="ml-2">
-                        {realTimeData.totalPairs} párů
-                      </Badge>
-                    )}
-                    {stream.needsAttention && (
-                      <Badge variant="destructive" className="ml-2 text-xs">
-                        Pozor
-                      </Badge>
-                    )}
-                  </div>
+                </Button>
+                
+                {!isRealTimeActive ? (
+                  <Button 
+                    onClick={startRealTimeDetection}
+                    variant="outline"
+                    size="lg"
+                    disabled={isAnalyzing}
+                  >
+                    <Wifi className="h-5 w-5 mr-2" />
+                    Real-time
+                  </Button>
+                ) : (
+                  <Button 
+                    onClick={stopRealTimeDetection}
+                    variant="destructive"
+                    size="lg"
+                  >
+                    <Square className="h-5 w-5 mr-2" />
+                    Zastavit
+                  </Button>
                 )}
+
+                <div className="flex items-center space-x-2">
+                  <Switch 
+                    id="auto-refresh"
+                    checked={settings.autoRefresh}
+                    onCheckedChange={(checked) => setSettings(prev => ({ ...prev, autoRefresh: checked }))}
+                  />
+                  <Label htmlFor="auto-refresh" className="text-sm">
+                    Auto obnovení
+                  </Label>
+                </div>
               </div>
+
+              {/* Progress Bar */}
+              {isAnalyzing && (
+                <div className="space-y-2">
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-600">Probíhá analýza...</span>
+                    <span className="text-gray-600">{Math.round(analysisProgress)}%</span>
+                  </div>
+                  <Progress value={analysisProgress} className="w-full" />
+                </div>
+              )}
+
+              {/* Status Information */}
+              {(dataSource === 'manual' && exchangeRates.length < 3) && !isAnalyzing && (
+                <Alert className="border-yellow-200 bg-yellow-50">
+                  <AlertCircle className="h-4 w-4 text-yellow-600" />
+                  <AlertDescription className="text-yellow-800">
+                    Pro detekci arbitráže jsou potřeba alespoň 3 směnné kurzy
+                  </AlertDescription>
+                </Alert>
+              )}
+
+              {/* Real-time Status */}
+              {realTimeData && (
+                <div className="text-sm text-gray-600">
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                    <span>Real-time: {realTimeData.totalPairs} párů, poslední aktualizace {realTimeData.lastUpdate.toLocaleTimeString('cs-CZ')}</span>
+                  </div>
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>

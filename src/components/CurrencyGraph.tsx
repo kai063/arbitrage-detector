@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import ForceGraph2D from 'react-force-graph-2d';
-import { ExchangeRate, ArbitrageResult } from '@/lib/algorithms/arbitrage';
+import { ExchangeRate, ArbitrageResult } from '@/lib/algorithms/arbitrage-dual-algorithm';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 

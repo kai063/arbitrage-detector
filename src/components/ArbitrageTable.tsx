@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { ArbitrageResult } from '@/lib/algorithms/arbitrage';
+import { ArbitrageResult } from '@/lib/algorithms/arbitrage-dual-algorithm';
 import { Download, TrendingUp, ArrowUpDown } from 'lucide-react';
 
 interface ArbitrageEntry {

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { ArbitrageResult } from '@/lib/algorithms/arbitrage';
+import { ArbitrageResult } from '@/lib/algorithms/arbitrage-dual-algorithm';
 import { ExchangeRate } from '@/lib/types';
 import { DebugLogEntry } from '@/components/AlgorithmDebug';
 

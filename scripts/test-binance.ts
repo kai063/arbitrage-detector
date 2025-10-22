@@ -7,7 +7,7 @@
 
 import { getBinanceRestClient, BinanceBookTicker } from '../src/lib/binance/rest-client';
 import { convertToGraph, createSymbolFilter, getConversionStats, parseSymbol, ConversionResult } from '../src/lib/binance/rate-converter';
-import { detectCurrencyArbitrage } from '../src/lib/algorithms/arbitrage';
+import { detectCurrencyArbitrage } from '../src/lib/algorithms/arbitrage-dual-algorithm';
 
 async function testBinanceRestClient() {
   console.log('🚀 Testing Binance REST API Client...\n');

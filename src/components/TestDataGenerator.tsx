@@ -3,7 +3,7 @@
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { ExchangeRate } from '@/lib/algorithms/arbitrage';
+import { ExchangeRate } from '@/lib/algorithms/arbitrage-dual-algorithm';
 import { TestTube, Zap } from 'lucide-react';
 
 interface TestDataGeneratorProps {

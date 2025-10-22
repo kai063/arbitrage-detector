@@ -4,7 +4,7 @@ import { useMemo } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts';
-import { ArbitrageResult } from '@/lib/algorithms/arbitrage';
+import { ArbitrageResult } from '@/lib/algorithms/arbitrage-dual-algorithm';
 import { TrendingUp, Target, Clock, BarChart3 } from 'lucide-react';
 
 interface StatisticsProps {

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getBinanceClient } from '@/lib/binance/client';
 import { convertToGraph, createSymbolFilter } from '@/lib/binance/rate-converter';
-import { detectCurrencyArbitrage } from '@/lib/algorithms/arbitrage';
+import { detectCurrencyArbitrage } from '@/lib/algorithms/arbitrage-dual-algorithm';
 import { RealTimeExchangeRates } from '@/lib/types';
 
 export interface StreamMessage {

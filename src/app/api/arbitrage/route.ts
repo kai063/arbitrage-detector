@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { ExchangeRate as LegacyExchangeRate, ArbitrageResult, detectCurrencyArbitrage, validateExchangeRates } from '@/lib/algorithms/arbitrage';
+import { ExchangeRate as LegacyExchangeRate, ArbitrageResult, detectCurrencyArbitrage, validateExchangeRates } from '@/lib/algorithms/arbitrage-dual-algorithm';
 import { getBinanceClient, startBinanceStream } from '@/lib/binance/client';
 import { getBinanceRestClient } from '@/lib/binance/rest-client';
 import { convertToGraph, createSymbolFilter } from '@/lib/binance/rate-converter';
@@ -13,10 +13,13 @@ export interface ArbitrageRequest {
     timestamp?: string;
   }[];
   settings?: {
-    maxIterations?: number;
-    minProfitThreshold?: number;
-    maxPathLength?: number;
-    selectedCurrencies?: string[];
+     maxIterations: number;
+    minProfitThreshold: number;
+    maxPathLength: number;
+    selectedCurrencies: string[];
+    autoRefresh: boolean;
+    algorithm: 'bellman-ford' | 'floyd-warshall'; 
+    bellmanFordStartCurrencies: string[];
     useRealTimeData?: boolean;
   };
 }
@@ -44,18 +47,22 @@ export async function POST(request: NextRequest): Promise<NextResponse<Arbitrage
     }
     
     // Extract settings with defaults
-    const settings = {
-      maxIterations: body.settings?.maxIterations || 10,
-      minProfitThreshold: body.settings?.minProfitThreshold || 0.005, // 0.5%
-      maxPathLength: body.settings?.maxPathLength || 4,
-      selectedCurrencies: body.settings?.selectedCurrencies || [],
-      useRealTimeData: body.settings?.useRealTimeData || false
-    };
+      const settings = {
+        maxIterations: body.settings?.maxIterations || 10,
+        minProfitThreshold: body.settings?.minProfitThreshold !== undefined ? body.settings.minProfitThreshold : 0.005,
+        maxPathLength: body.settings?.maxPathLength || 4,
+        selectedCurrencies: body.settings?.selectedCurrencies || [],
+        useRealTimeData: body.settings?.useRealTimeData || false,
+        algorithm: body.settings?.algorithm || 'floyd-warshall',
+        bellmanFordStartCurrencies: body.settings?.bellmanFordStartCurrencies || []
+      };
     
-    console.log('🔧 API Settings received:', {
+    console.log('🔧 API ROUTE DEBUG - Request received:', {
       requestSettings: body.settings,
       finalSettings: settings,
-      exchangeRatesLength: body.exchangeRates?.length || 0
+      exchangeRatesLength: body.exchangeRates?.length || 0,
+      willUseBinanceData: settings.useRealTimeData || body.exchangeRates.length === 0,
+      dataSource: settings.useRealTimeData ? 'realtime' : (body.exchangeRates.length === 0 ? 'binance-rest' : 'manual')
     });
 
     // If using real-time data or empty request body, get from Binance REST API
@@ -75,13 +82,34 @@ export async function POST(request: NextRequest): Promise<NextResponse<Arbitrage
       }
 
       // Convert Binance tickers to exchange rates
+      console.log('📊 BINANCE DATA DEBUG - Raw Binance response:', {
+        tickersCount: tickersResult.data.length,
+        cached: tickersResult.cached,
+        timestamp: tickersResult.timestamp,
+        sampleTickers: tickersResult.data.slice(0, 5).map(t => ({
+          symbol: t.symbol,
+          bidPrice: t.bidPrice,
+          askPrice: t.askPrice
+        }))
+      });
+
       const conversionResult = convertToGraph(tickersResult.data, {
         includeReverse: true,
         filterSymbols: createSymbolFilter({ quoteCurrencies: ['USDT'] }),
         maxSpread: 2 // 2% max spread for arbitrage
       });
       
+      console.log('📊 CONVERSION RESULT DEBUG:', {
+        legacyRatesCount: conversionResult.legacyRates.length,
+        exchangeRatesCount: conversionResult.exchangeRates.length,
+        totalPairs: conversionResult.totalPairs,
+        processedSymbols: conversionResult.processedSymbols.length,
+        skippedSymbols: conversionResult.skippedSymbols.length,
+        sampleLegacyRates: conversionResult.legacyRates.slice(0, 10).map(r => `${r.from}→${r.to}: ${r.rate}`)
+      });
+      
       if (conversionResult.legacyRates.length < 3) {
+        console.log('❌ CRITICAL: Insufficient valid trading pairs from Binance conversion!');
         return NextResponse.json(
           {
             success: false,
@@ -126,12 +154,29 @@ export async function POST(request: NextRequest): Promise<NextResponse<Arbitrage
           effectiveSelectedCurrencies.add('USDT');
         }
 
-        // More intelligent filtering: include rates where at least one currency is selected
-        // This allows for arbitrage paths through USDT or other hub currencies
-        filteredRates = conversionResult.legacyRates.filter(rate => 
-          effectiveSelectedCurrencies.has(rate.from) || 
-          effectiveSelectedCurrencies.has(rate.to)
-        );
+        // Intelligent filtering strategy:
+        // 1. Include all pairs where both currencies are selected (direct pairs)
+        // 2. Include pairs involving selected currencies + major hub currencies (USDT, BTC, ETH)
+        // This ensures graph connectivity while focusing on selected currencies
+        const majorHubCurrencies = new Set(['USDT', 'BTC', 'ETH', 'BUSD', 'USDC']);
+        
+        filteredRates = conversionResult.legacyRates.filter(rate => {
+          const fromSelected = effectiveSelectedCurrencies.has(rate.from);
+          const toSelected = effectiveSelectedCurrencies.has(rate.to);
+          const fromIsHub = majorHubCurrencies.has(rate.from);
+          const toIsHub = majorHubCurrencies.has(rate.to);
+          
+          // Include if both are selected (ideal)
+          if (fromSelected && toSelected) return true;
+          
+          // Include if one is selected and other is a major hub currency
+          if ((fromSelected && toIsHub) || (toSelected && fromIsHub)) return true;
+          
+          // Include major hub currency pairs (for graph connectivity)
+          if (fromIsHub && toIsHub) return true;
+          
+          return false;
+        });
 
         // If still too few rates after inclusive filtering, try more restrictive approaches
         if (filteredRates.length < 10 && settings.selectedCurrencies.length > 0) {
@@ -196,12 +241,44 @@ export async function POST(request: NextRequest): Promise<NextResponse<Arbitrage
         });
       }
 
-      // Detect arbitrage with Binance data
-      console.log('🔍 Starting arbitrage detection with Binance data:', {
-        totalRates: filteredRates.length,
-        settings: settings,
-        sampleRates: filteredRates.slice(0, 5)
+      // Final check before sending to algorithm
+      console.log('🔍 FINAL DATA CHECK - About to send to algorithm:', {
+        filteredRatesCount: filteredRates.length,
+        originalRatesCount: conversionResult.legacyRates.length,
+        filteringReduction: `${((conversionResult.legacyRates.length - filteredRates.length) / conversionResult.legacyRates.length * 100).toFixed(1)}%`,
+        settings: {
+          maxIterations: settings.maxIterations,
+          algorithm: settings.algorithm,
+          selectedCurrencies: settings.selectedCurrencies?.length || 0,
+          minProfitThreshold: settings.minProfitThreshold
+        },
+        sampleRates: filteredRates.slice(0, 5).map(r => `${r.from}→${r.to}: ${r.rate}`)
       });
+
+      // CRITICAL CHECK: If we have no rates after filtering, the algorithm will finish instantly
+      if (filteredRates.length === 0) {
+        console.log('❌ CRITICAL FAILURE: No rates survived filtering! Algorithm will have nothing to process.');
+        return NextResponse.json(
+          {
+            success: false,
+            error: 'No valid exchange rates after currency filtering. Try selecting different currencies or check filter settings.',
+            timestamp: new Date().toISOString()
+          },
+          { status: 400 }
+        );
+      }
+
+      // TESTING: Simple arbitrage test - just add 3 rates that form a profitable cycle
+      console.log('🧪 Adding simple test arbitrage cycle...');
+      const simpleTestRates = [
+        { from: 'TEST1', to: 'TEST2', rate: 1.1, timestamp: new Date() },
+        { from: 'TEST2', to: 'TEST3', rate: 1.1, timestamp: new Date() },
+        { from: 'TEST3', to: 'TEST1', rate: 0.83, timestamp: new Date() } // 1.1 * 1.1 * 0.83 = 1.0043 = 0.43% profit
+      ];
+      
+      // Add just the test rates to keep it simple
+      filteredRates = [...filteredRates, ...simpleTestRates];
+      console.log(`🧪 Added ${simpleTestRates.length} simple test rates. Total rates: ${filteredRates.length}`);
       
       const arbitrageResult = detectCurrencyArbitrage(filteredRates, settings);
       const executionTime = Date.now() - startTime;
@@ -225,6 +302,21 @@ export async function POST(request: NextRequest): Promise<NextResponse<Arbitrage
               processedSymbols: conversionResult.processedSymbols.length,
               skippedSymbols: conversionResult.skippedSymbols.length,
               cached: tickersResult.cached || false
+            }
+          },
+          debug: {
+            message: 'API route executed successfully',
+            binanceTickers: tickersResult.data.length,
+            conversionResultRates: conversionResult.legacyRates.length,
+            filteredRatesCount: filteredRates.length,
+            settingsReceived: settings,
+            executionTimeMs: executionTime,
+            algorithmInfo: {
+              cycles: arbitrageResult.cycles.length,
+              totalOpportunities: arbitrageResult.totalOpportunities,
+              executionTime: arbitrageResult.executionTimeMs,
+              algorithmUsed: arbitrageResult.algorithmUsed,
+              timestamp: arbitrageResult.timestamp
             }
           },
           timestamp: new Date().toISOString()
