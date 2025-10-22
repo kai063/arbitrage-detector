@@ -162,26 +162,21 @@ export class ArbitrageDetector {
     const startTime = Date.now();
     const algorithm = settings?.algorithm || 'floyd-warshall';
     
-    // Calculate optimal max iterations based on currency count
-    const optimalMaxIterations = this.currencies.length > 0 ? this.currencies.length - 1 : 10;
-    const actualMaxIterations = settings?.maxIterations ?? optimalMaxIterations;
+    // Use user-specified max iterations without auto-capping
+    const actualMaxIterations = settings?.maxIterations ?? 100;
     
     console.log('🔍 Starting arbitrage detection:', {
       algorithm,
       totalCurrencies: this.currencies.length,
       totalRates: this.exchangeRates.length,
       maxIterations: actualMaxIterations,
-      optimalMaxIterations,
       minProfitThreshold: settings?.minProfitThreshold,
       minProfitThresholdPercent: `${(settings?.minProfitThreshold || 0) * 100}%`,
       maxPathLength: settings?.maxPathLength,
       bellmanFordStartCurrencies: settings?.bellmanFordStartCurrencies?.length || 0
     });
 
-    // CRITICAL CHECK: Is profit threshold too high?
-    if ((settings?.minProfitThreshold || 0) > 0.01) {
-      console.log(`⚠️ WARNING: Very high profit threshold: ${((settings?.minProfitThreshold || 0) * 100).toFixed(2)}% - this might eliminate all opportunities`);
-    }
+    // Note: Removed profit threshold warning - now detecting any positive profit
 
     let cycles: ArbitrageCycle[];
     
@@ -225,7 +220,7 @@ export class ArbitrageDetector {
     const processedCycles = new Set<string>();
     const n = this.currencies.length;
     const maxIterations = settings?.maxIterations ?? (n - 1);
-    const minProfit = (settings?.minProfitThreshold || 0.001) * 100;
+    const minProfit = (settings?.minProfitThreshold || 0) * 100;
     const maxLength = settings?.maxPathLength || 6;
 
     console.log(`🔍 BELLMAN-FORD DEBUG - Starting detection:`, {
@@ -348,14 +343,9 @@ export class ArbitrageDetector {
           console.log(`    Iteration ${iter + 1}/${maxIterations}: ${iterationRelaxations} relaxations, ${actualOperations} operations total`);
         }
         
-        // Small delay to simulate proper computation
-        if (n > 100 && iter % 50 === 0) {
-          // Minimal delay to prevent instant completion
-          const start = Date.now();
-          while (Date.now() - start < 1) {
-            // 1ms delay every 50 iterations
-          }
-        }
+        // Real computational work instead of artificial delays
+        // The algorithm should naturally take time with proper iteration counts
+        // No artificial delays needed - the math operations provide real work
       }
       
       console.log(`    📊 Bellman-Ford completed: ${totalRelaxations} total relaxations, ${actualOperations} total operations`);
@@ -421,7 +411,7 @@ export class ArbitrageDetector {
 
   private floydWarshallDetection(settings?: AlgorithmSettings): ArbitrageCycle[] {
     const n = this.currencies.length;
-    const minProfit = (settings?.minProfitThreshold || 0.001) * 100;
+    const minProfit = (settings?.minProfitThreshold || 0) * 100;
     const maxLength = settings?.maxPathLength || 6;
     const cycles: ArbitrageCycle[] = [];
     const processedCycles = new Set<string>();
@@ -434,14 +424,21 @@ export class ArbitrageDetector {
       Array(n).fill(null).map((_, j) => j)
     );
 
-    // Floyd-Warshall main algorithm
+    // Floyd-Warshall main algorithm with proper O(V³) complexity and tracking
+    let totalOperations = 0;
+
     for (let k = 0; k < n; k++) {
+      let iterationOperations = 0;
+
       if (k % Math.max(1, Math.floor(n / 10)) === 0) {
         console.log(`    Processing intermediate vertex ${k + 1}/${n}...`);
       }
-      
+
       for (let i = 0; i < n; i++) {
         for (let j = 0; j < n; j++) {
+          iterationOperations++;
+          totalOperations++;
+
           if (dist[i][k] !== Infinity && dist[k][j] !== Infinity) {
             const newDist = dist[i][k] + dist[k][j];
             if (newDist < dist[i][j]) {
@@ -451,7 +448,13 @@ export class ArbitrageDetector {
           }
         }
       }
+
+      if (k % Math.max(1, Math.floor(n / 10)) === 0) {
+        console.log(`      Vertex ${k + 1}: ${iterationOperations} operations, ${totalOperations} total so far`);
+      }
     }
+
+    console.log(`  Floyd-Warshall completed: ${totalOperations} total operations (expected ${n * n * n})`);
 
     console.log(`  Searching for negative cycles...`);
     
@@ -669,11 +672,8 @@ export function detectCurrencyArbitrage(
   
   detector.buildGraph(exchangeRates);
   
-  // Auto-calculate max iterations if not specified
+  // Use provided settings without auto-capping to respect user choices
   const currencyCount = detector.getCurrencies().length;
-  if (settings && !settings.maxIterations) {
-    settings.maxIterations = currencyCount > 0 ? currencyCount - 1 : 10;
-  }
   
   console.log(`🏗️ Built graph with ${currencyCount} currencies`);
   
@@ -681,17 +681,15 @@ export function detectCurrencyArbitrage(
     throw new Error(`ALGORITHM FAILURE: Too few currencies for arbitrage: ${currencyCount}`);
   }
   
-  // Force minimum execution time for testing
-  const forceDelay = currencyCount > 100 ? 2000 : 1000; // 1-2 second minimum
-  console.log(`🔄 About to run ${settings?.algorithm || 'unknown'} algorithm on ${currencyCount} currencies - should take at least ${forceDelay}ms`);
-  
+  // Run algorithm with real computational work - no artificial delays
+  console.log(`🔄 Running ${settings?.algorithm || 'unknown'} algorithm on ${currencyCount} currencies with ${settings?.maxIterations || 100} max iterations`);
+
   const algorithmStart = Date.now();
   const result = detector.detectAllArbitrageCycles(settings);
   const algorithmTime = Date.now() - algorithmStart;
-  
-  if (algorithmTime < 10 && currencyCount > 100) {
-    console.log(`🚨 ALGORITHM SUSPICIOUS: Completed too quickly (${algorithmTime}ms) for ${currencyCount} currencies!`);
-    // Don't throw error, just log warning
+
+  if (algorithmTime < 100 && currencyCount > 50) {
+    console.log(`⚠️ ALGORITHM FAST: Completed in ${algorithmTime}ms for ${currencyCount} currencies - may indicate insufficient computational load`);
   }
   
   const totalTime = Date.now() - startTime;
@@ -762,7 +760,7 @@ export function testArbitrageAlgorithm(): ArbitrageResult {
   
   const settings: AlgorithmSettings = {
     maxIterations: 10,
-    minProfitThreshold: 0.001, // 0.1% minimum
+    minProfitThreshold: 0, // Any positive profit
     maxPathLength: 4,
     algorithm: 'bellman-ford',
     bellmanFordStartCurrencies: ['USD']

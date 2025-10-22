@@ -160,32 +160,18 @@ export default function Home() {
   
   // Algorithm settings state
   const [settings, setSettings] = useState<AlgorithmSettings>({
-    maxIterations: 10,
+    maxIterations: 100,
     minProfitThreshold: 0,
     maxPathLength: 4,
     selectedCurrencies: [],
     autoRefresh: false,
-    algorithm: 'floyd-warshall',         
-    bellmanFordStartCurrencies: []         
+    algorithm: 'floyd-warshall',
+    bellmanFordStartCurrencies: []
   });
 
-  // Calculate optimal max iterations based on currency count
-    const getOptimalMaxIterations = useCallback((currencyCount: number) => {
-      // For Bellman-Ford: V-1 iterations where V is number of vertices
-      if (currencyCount === 0) return 10;
-      return currencyCount - 1;
-    }, []);
+  // Note: Removed optimal calculation function to respect user settings
 
-// Auto-adjust max iterations when currencies or algorithm changes
-useEffect(() => {
-  const currencyCount = settings.selectedCurrencies.length || availableCurrencies.base.length;
-  const optimal = getOptimalMaxIterations(currencyCount);
-  
-  // Update max iterations to optimal value for Bellman-Ford
-  if (settings.algorithm === 'bellman-ford' && settings.maxIterations !== optimal) {
-    setSettings(prev => ({ ...prev, maxIterations: optimal }));
-  }
-}, [settings.selectedCurrencies, settings.algorithm, settings.maxIterations, availableCurrencies.base.length, getOptimalMaxIterations]);
+// Note: Removed auto-adjustment of max iterations to respect user settings
 
   // Fetch available currencies from Binance
   const fetchAvailableCurrencies = useCallback(async () => {
@@ -758,13 +744,10 @@ useEffect(() => {
               <Select 
                 value={settings.algorithm} 
                 onValueChange={(value: 'bellman-ford' | 'floyd-warshall') => {
-                  const currencyCount = settings.selectedCurrencies.length || availableCurrencies.base.length;
-                  const optimal = getOptimalMaxIterations(currencyCount);
-                  setSettings(prev => ({ 
-                    ...prev, 
+                  setSettings(prev => ({
+                    ...prev,
                     algorithm: value,
-                    maxIterations: value === 'bellman-ford' ? optimal : prev.maxIterations,
-                    bellmanFordStartCurrencies: value === 'bellman-ford' && prev.bellmanFordStartCurrencies.length === 0 
+                    bellmanFordStartCurrencies: value === 'bellman-ford' && prev.bellmanFordStartCurrencies.length === 0
                       ? (settings.selectedCurrencies.slice(0, 3) || ['USDT', 'BTC', 'ETH'])
                       : prev.bellmanFordStartCurrencies
                   }));
@@ -799,12 +782,7 @@ useEffect(() => {
                   <label className="text-sm font-medium">Max iterace</label>
                   <div className="flex items-center gap-2">
                     <Badge variant="outline">{settings.maxIterations}</Badge>
-                    {settings.algorithm === 'bellman-ford' && (
-                      <Badge variant="secondary" className="text-xs">
-                        Opt: {getOptimalMaxIterations(settings.selectedCurrencies.length || availableCurrencies.base.length)}
-                      </Badge>
-                    )}
-                  </div>
+                    </div>
                 </div>
                 <Slider
                   value={[settings.maxIterations]}
@@ -815,8 +793,8 @@ useEffect(() => {
                   className="w-full"
                 />
                 <p className="text-xs text-gray-500">
-                  {settings.algorithm === 'bellman-ford' 
-                    ? `Pro ${settings.selectedCurrencies.length || availableCurrencies.base.length} měn je optimální ${getOptimalMaxIterations(settings.selectedCurrencies.length || availableCurrencies.base.length)} iterací`
+                  {settings.algorithm === 'bellman-ford'
+                    ? 'Počet iterací pro Bellman-Ford algoritmus'
                     : 'Počet iterací pro Floyd-Warshall'}
                 </p>
               </div>
@@ -923,8 +901,8 @@ useEffect(() => {
                   </div>
                 ) : (
                   <div>
-                    <strong>Bellman-Ford:</strong> Hledá cykly z {settings.bellmanFordStartCurrencies.length || 'automaticky vybraných'} počátečních bodů. 
-                    Rychlejší pro cílené hledání. Max iterace = V-1 = {getOptimalMaxIterations(settings.selectedCurrencies.length || availableCurrencies.base.length)}.
+                    <strong>Bellman-Ford:</strong> Hledá cykly z {settings.bellmanFordStartCurrencies.length || 'automaticky vybraných'} počátečních bodů.
+                    Rychlejší pro cílené hledání. Počet iterací je dán nastavením.
                   </div>
                 )}
               </AlertDescription>

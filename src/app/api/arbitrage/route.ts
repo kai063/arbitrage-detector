@@ -48,8 +48,8 @@ export async function POST(request: NextRequest): Promise<NextResponse<Arbitrage
     
     // Extract settings with defaults
       const settings = {
-        maxIterations: body.settings?.maxIterations || 10,
-        minProfitThreshold: body.settings?.minProfitThreshold !== undefined ? body.settings.minProfitThreshold : 0.005,
+        maxIterations: body.settings?.maxIterations || 100,
+        minProfitThreshold: body.settings?.minProfitThreshold !== undefined ? body.settings.minProfitThreshold : 0,
         maxPathLength: body.settings?.maxPathLength || 4,
         selectedCurrencies: body.settings?.selectedCurrencies || [],
         useRealTimeData: body.settings?.useRealTimeData || false,
@@ -268,18 +268,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<Arbitrage
         );
       }
 
-      // TESTING: Simple arbitrage test - just add 3 rates that form a profitable cycle
-      console.log('🧪 Adding simple test arbitrage cycle...');
-      const simpleTestRates = [
-        { from: 'TEST1', to: 'TEST2', rate: 1.1, timestamp: new Date() },
-        { from: 'TEST2', to: 'TEST3', rate: 1.1, timestamp: new Date() },
-        { from: 'TEST3', to: 'TEST1', rate: 0.83, timestamp: new Date() } // 1.1 * 1.1 * 0.83 = 1.0043 = 0.43% profit
-      ];
-      
-      // Add just the test rates to keep it simple
-      filteredRates = [...filteredRates, ...simpleTestRates];
-      console.log(`🧪 Added ${simpleTestRates.length} simple test rates. Total rates: ${filteredRates.length}`);
-      
+        
       const arbitrageResult = detectCurrencyArbitrage(filteredRates, settings);
       const executionTime = Date.now() - startTime;
       
