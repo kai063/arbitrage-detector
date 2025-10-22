@@ -12,6 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Label } from '@/components/ui/label';
+import { Progress } from '@/components/ui/progress';
 import { ExchangeRate, ArbitrageResult } from '@/lib/algorithms/arbitrage';
 import { AlertCircle, Plus, Search, Trash2, Settings, Play, Square, Wifi, WifiOff, Activity, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -49,6 +50,46 @@ interface BinanceDataInfo {
   loading: boolean;
 }
 
+// Currency Pair Display Component
+function CurrencyPairDisplay({ selectedCurrencies }: { 
+  selectedCurrencies: string[]
+}) {
+  const [showAllCurrencies, setShowAllCurrencies] = useState(false);
+  const INITIAL_DISPLAY_COUNT = 5;
+  
+  if (selectedCurrencies.length === 0) return null;
+  
+  const displayedCurrencies = showAllCurrencies 
+    ? selectedCurrencies 
+    : selectedCurrencies.slice(0, INITIAL_DISPLAY_COUNT);
+  
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap gap-1">
+        {displayedCurrencies.map(currency => (
+          <Badge key={currency} variant="secondary" className="text-xs">
+            {currency}
+          </Badge>
+        ))}
+      </div>
+      
+      {selectedCurrencies.length > INITIAL_DISPLAY_COUNT && (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setShowAllCurrencies(!showAllCurrencies)}
+          className="text-xs h-6"
+        >
+          {showAllCurrencies 
+            ? `Zobrazit méně (prvních ${INITIAL_DISPLAY_COUNT})`
+            : `Zobrazit všech ${selectedCurrencies.length} měn`
+          }
+        </Button>
+      )}
+    </div>
+  );
+}
+
 export default function Home() {
   const [exchangeRates, setExchangeRates] = useState<ExchangeRate[]>([]);
   const [newRate, setNewRate] = useState({ from: '', to: '', rate: '' });
@@ -64,6 +105,26 @@ export default function Home() {
   const [arbitrageHistory, setArbitrageHistory] = useState<ArbitrageResult[]>([]);
   const [totalRuns, setTotalRuns] = useState(0);
   const [isDebugEnabled, setIsDebugEnabled] = useState(false);
+  const [analysisProgress, setAnalysisProgress] = useState(0);
+  const [debugLogs, setDebugLogs] = useState<import('@/components/AlgorithmDebug').DebugLogEntry[]>([]);
+
+  // Add debug log function
+  const addDebugLog = useCallback((entry: Omit<import('@/components/AlgorithmDebug').DebugLogEntry, 'id' | 'timestamp'>) => {
+    if (!isDebugEnabled) return;
+    
+    const newEntry = {
+      ...entry,
+      id: Math.random().toString(36).substr(2, 9),
+      timestamp: new Date()
+    };
+
+    setDebugLogs(prev => [...prev, newEntry].slice(-100)); // Keep last 100 logs
+  }, [isDebugEnabled]);
+
+  // Clear debug logs function
+  const clearDebugLogs = useCallback(() => {
+    setDebugLogs([]);
+  }, []);
   
   // Available currencies from Binance
   const [availableCurrencies, setAvailableCurrencies] = useState<{
@@ -78,6 +139,7 @@ export default function Home() {
   
   // Data source selection
   const [dataSource, setDataSource] = useState<DataSource>('manual');
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [binanceDataInfo, setBinanceDataInfo] = useState<BinanceDataInfo>({
     totalPairs: 0,
     processedSymbols: 0,
@@ -102,6 +164,15 @@ export default function Home() {
     selectedCurrencies: [],
     autoRefresh: false
   });
+
+  // Calculate optimal max iterations based on currency count
+  const getOptimalMaxIterations = useCallback((currencyCount: number) => {
+    if (currencyCount <= 5) return 10;
+    if (currencyCount <= 20) return 50;
+    if (currencyCount <= 50) return 100;
+    if (currencyCount <= 100) return 200;
+    return Math.min(currencyCount * 2, 500); // Cap at 500 iterations
+  }, []);
 
 
   // Fetch available currencies from Binance
@@ -145,74 +216,6 @@ export default function Home() {
     }
   };
 
-  // Load and analyze Binance data
-  const loadAndAnalyzeBinanceData = useCallback(async () => {
-    setBinanceDataInfo(prev => ({ ...prev, loading: true }));
-    setIsAnalyzing(true);
-    setErrors([]);
-
-    try {
-      // Update settings to use selected currencies
-      const updatedSettings = {
-        ...settings,
-        selectedCurrencies: [],
-        useRealTimeData: false
-      };
-
-      const response = await fetch('/api/arbitrage', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          exchangeRates: [], // Empty to trigger Binance data
-          settings: updatedSettings
-        })
-      });
-
-      const data = await response.json();
-      
-      if (data.success && data.data) {
-        setArbitrageResult(data.data);
-        setArbitrageHistory(prev => [...prev, data.data].slice(-50));
-        setTotalRuns(prev => prev + 1);
-
-        // Update Binance data info
-        if (data.data.dataSource) {
-          setBinanceDataInfo({
-            totalPairs: data.data.dataSource.totalPairs || 0,
-            processedSymbols: data.data.dataSource.processedSymbols || 0,
-            skippedSymbols: data.data.dataSource.skippedSymbols || 0,
-            cached: data.data.dataSource.cached || false,
-            timestamp: new Date(),
-            loading: false
-          });
-        }
-
-        // Show success toast
-        if (data.data.cycles.length > 0) {
-          toast.success('Binance arbitráž detekována!', {
-            description: `Nalezeno ${data.data.cycles.length} arbitrážních příležitostí`,
-          });
-        } else {
-          toast.info('Binance analýza dokončena', {
-            description: 'Žádné arbitrážní příležitosti nebyly nalezeny',
-          });
-        }
-      } else {
-        setErrors([data.error || 'Chyba při analýze Binance dat']);
-        toast.error('Chyba při analýze Binance dat', {
-          description: data.error || 'Neznámá chyba při načítání dat z Binance',
-        });
-      }
-    } catch {
-      setErrors(['Chyba při načítání Binance dat']);
-      toast.error('Síťová chyba', {
-        description: 'Nepodařilo se připojit k Binance API',
-      });
-    } finally {
-      setIsAnalyzing(false);
-      setBinanceDataInfo(prev => ({ ...prev, loading: false }));
-    }
-  }, [settings]);
 
   // Fetch available pairs when component mounts
   useEffect(() => {
@@ -273,6 +276,31 @@ export default function Home() {
 
     setIsAnalyzing(true);
     setErrors([]);
+    setAnalysisProgress(0);
+
+    // Add initial debug log
+    const startTime = performance.now();
+    addDebugLog({
+      type: 'info',
+      message: `Spuštění ${dataSource === 'binance' ? 'Binance' : 'manuální'} analýzy arbitráže`,
+      data: { 
+        dataSource, 
+        useRealTime, 
+        maxIterations: settings.maxIterations,
+        selectedCurrencies: settings.selectedCurrencies.length 
+      }
+    });
+
+    // Simulate progress updates for single-shot analysis
+    let progressInterval: NodeJS.Timeout | null = null;
+    if (dataSource === 'binance' && !useRealTime) {
+      progressInterval = setInterval(() => {
+        setAnalysisProgress(prev => {
+          const next = prev + Math.random() * 15;
+          return next > 90 ? 90 : next;
+        });
+      }, 200);
+    }
 
     try {
       const requestBody = {
@@ -305,6 +333,32 @@ export default function Home() {
         setArbitrageHistory(prev => [...prev, data.data].slice(-50)); // Keep last 50 results
         setTotalRuns(prev => prev + 1);
         
+        // Add debug log for successful analysis
+        addDebugLog({
+          type: 'info',
+          message: `Analýza dokončena úspěšně`,
+          data: { 
+            cycles: data.data.cycles.length,
+            totalOpportunities: data.data.totalOpportunities,
+            bestProfit: data.data.bestOpportunity?.profitPercentage 
+          }
+        });
+
+        // Add debug logs for each found cycle
+        if (data.data.cycles.length > 0) {
+          data.data.cycles.forEach((cycle: { currencies: string[]; profitPercentage: number; rates: { from: string; to: string; rate: number }[] }, index: number) => {
+            addDebugLog({
+              type: 'cycle',
+              message: `Detekován arbitrážní cyklus #${index + 1}: ${cycle.currencies.join(' → ')}`,
+              data: { 
+                cycle: cycle.currencies,
+                profit: cycle.profitPercentage,
+                rates: cycle.rates 
+              }
+            });
+          });
+        }
+        
         // Show success toast
         if (data.data.cycles.length > 0) {
           toast.success('Arbitráž detekována!', {
@@ -317,12 +371,28 @@ export default function Home() {
         }
       } else {
         setErrors([data.error || 'Chyba při analýze arbitráže']);
+        
+        // Add debug log for error
+        addDebugLog({
+          type: 'error',
+          message: `Chyba při analýze: ${data.error || 'Neznámá chyba'}`,
+          data: { error: data.error }
+        });
+        
         toast.error('Chyba při analýze', {
           description: data.error || 'Neznámá chyba při detekci arbitráže',
         });
       }
-    } catch {
+    } catch (error) {
       setErrors(['Chyba při analýze arbitráže']);
+      
+      // Add debug log for network error
+      addDebugLog({
+        type: 'error',
+        message: 'Síťová chyba při komunikaci se serverem',
+        data: { error: error instanceof Error ? error.message : 'Unknown error' }
+      });
+      
       toast.error('Síťová chyba', {
         description: 'Nepodařilo se připojit k serveru',
         action: {
@@ -331,9 +401,25 @@ export default function Home() {
         },
       });
     } finally {
-      setIsAnalyzing(false);
+      if (progressInterval) {
+        clearInterval(progressInterval);
+      }
+      setAnalysisProgress(100);
+      
+      // Add performance debug log
+      const endTime = performance.now();
+      addDebugLog({
+        type: 'performance',
+        message: 'Analýza dokončena',
+        executionTime: endTime - startTime
+      });
+      
+      setTimeout(() => {
+        setIsAnalyzing(false);
+        setAnalysisProgress(0);
+      }, 500);
     }
-  }, [dataSource, exchangeRates, settings.maxIterations, settings.minProfitThreshold, settings.maxPathLength, settings.selectedCurrencies]);
+  }, [dataSource, exchangeRates, settings.maxIterations, settings.minProfitThreshold, settings.maxPathLength, settings.selectedCurrencies, addDebugLog]);
 
   const runArbitrageDetection = useCallback(() => {
     detectArbitrage(false);
@@ -584,19 +670,6 @@ export default function Home() {
                   </div>
                 )}
 
-                {/* Load & Analyze Button */}
-                <Button 
-                  onClick={runArbitrageDetection} 
-                  disabled={binanceDataInfo.loading}
-                  className="w-full"
-                >
-                  {binanceDataInfo.loading ? (
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  ) : (
-                    <Search className="h-4 w-4 mr-2" />
-                  )}
-                  {binanceDataInfo.loading ? 'Načítání dat z Binance...' : 'Načíst data a analyzovat'}
-                </Button>
                 
                 {/* Binance Data Table */}
                 <BinanceDataTable isVisible={true} />
@@ -682,7 +755,12 @@ export default function Home() {
                   value={settings.selectedCurrencies.join(',')} 
                   onValueChange={(value) => {
                     const currencies = value ? value.split(',') : [];
-                    setSettings(prev => ({ ...prev, selectedCurrencies: currencies }));
+                    const optimalIterations = getOptimalMaxIterations(currencies.length);
+                    setSettings(prev => ({ 
+                      ...prev, 
+                      selectedCurrencies: currencies,
+                      maxIterations: Math.max(prev.maxIterations, optimalIterations)
+                    }));
                   }}
                 >
                   <SelectTrigger>
@@ -717,13 +795,9 @@ export default function Home() {
                     )}
                   </SelectContent>
                 </Select>
-                <div className="flex flex-wrap gap-1">
-                  {settings.selectedCurrencies.map(currency => (
-                    <Badge key={currency} variant="secondary" className="text-xs">
-                      {currency}
-                    </Badge>
-                  ))}
-                </div>
+                <CurrencyPairDisplay 
+                  selectedCurrencies={settings.selectedCurrencies}
+                />
               </div>
 
               {/* Auto-refresh and Controls */}
@@ -774,18 +848,29 @@ export default function Home() {
                       {isAnalyzing ? 'Analyzuji...' : 'Detekovat arbitráž'}
                     </Button>
                   ) : (
-                    <Button 
-                      onClick={runArbitrageDetection} 
-                      disabled={binanceDataInfo.loading || isRealTimeActive}
-                      className="flex-1"
-                    >
-                      {binanceDataInfo.loading ? (
-                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                      ) : (
-                        <Search className="h-4 w-4 mr-2" />
+                    <div className="flex-1 space-y-2">
+                      <Button 
+                        onClick={runArbitrageDetection} 
+                        disabled={isAnalyzing || isRealTimeActive}
+                        className="w-full"
+                      >
+                        {isAnalyzing ? (
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        ) : (
+                          <Search className="h-4 w-4 mr-2" />
+                        )}
+                        {isAnalyzing ? 'Analyzuji...' : 'Single-shot analýza'}
+                      </Button>
+                      {isAnalyzing && analysisProgress > 0 && (
+                        <div className="space-y-1">
+                          <div className="flex justify-between items-center text-xs text-gray-600">
+                            <span>Průběh analýzy</span>
+                            <span>{Math.round(analysisProgress)}%</span>
+                          </div>
+                          <Progress value={analysisProgress} className="h-2" />
+                        </div>
                       )}
-                      {binanceDataInfo.loading ? 'Načítání...' : 'Single-shot analýza'}
-                    </Button>
+                    </div>
                   )}
                   
                   {dataSource === 'manual' && (
@@ -848,6 +933,10 @@ export default function Home() {
           onToggleDebug={(enabled) => {
             setIsDebugEnabled(enabled);
           }}
+          maxIterations={settings.maxIterations}
+          externalLogs={debugLogs}
+          onAddLog={addDebugLog}
+          onClearLogs={clearDebugLogs}
         />
 
         {/* Main Content Grid */}
@@ -1149,10 +1238,10 @@ export default function Home() {
                   {dataSource === 'binance' && arbitrageResult?.dataSource ? 
                     JSON.stringify({
                       source: 'binance',
-                      totalPairs: arbitrageResult.dataSource.totalPairs,
-                      processedSymbols: arbitrageResult.dataSource.processedSymbols,
-                      skippedSymbols: arbitrageResult.dataSource.skippedSymbols,
-                      cached: arbitrageResult.dataSource.cached,
+                      totalPairs: arbitrageResult.dataSource?.totalPairs,
+                      processedSymbols: arbitrageResult.dataSource?.processedSymbols,
+                      skippedSymbols: arbitrageResult.dataSource?.skippedSymbols,
+                      cached: arbitrageResult.dataSource?.cached,
                       sampleMessage: 'Use /api/arbitrage GET endpoint to see actual rates'
                     }, null, 2) :
                     JSON.stringify(

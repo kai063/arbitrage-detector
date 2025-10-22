@@ -31,6 +31,9 @@ export default function BinanceDataTable({ isVisible }: BinanceDataTableProps) {
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const [showAll, setShowAll] = useState(false);
+  
+  const INITIAL_DISPLAY_COUNT = 50;
 
   const fetchBinanceData = async () => {
     setLoading(true);
@@ -187,7 +190,7 @@ export default function BinanceDataTable({ isVisible }: BinanceDataTableProps) {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {filteredData.map((item, index) => {
+                  {(showAll ? filteredData : filteredData.slice(0, INITIAL_DISPLAY_COUNT)).map((item, index) => {
                     return (
                       <TableRow key={`${item.symbol}-${index}`} className="hover:bg-gray-50">
                         <TableCell className="font-medium">
@@ -227,6 +230,22 @@ export default function BinanceDataTable({ isVisible }: BinanceDataTableProps) {
                 </TableBody>
               </Table>
             </div>
+            
+            {/* Show More/Less Button */}
+            {filteredData.length > INITIAL_DISPLAY_COUNT && (
+              <div className="border-t bg-gray-50 p-4 text-center">
+                <Button 
+                  variant="outline" 
+                  size="sm"
+                  onClick={() => setShowAll(!showAll)}
+                >
+                  {showAll ? 
+                    `Zobrazit méně (prvních ${INITIAL_DISPLAY_COUNT})` : 
+                    `Zobrazit všech ${filteredData.length} párů`
+                  }
+                </Button>
+              </div>
+            )}
           </div>
         )}
 

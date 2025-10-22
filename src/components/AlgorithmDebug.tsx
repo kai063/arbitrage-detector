@@ -18,9 +18,20 @@ export interface DebugLogEntry {
 interface AlgorithmDebugProps {
   isRunning: boolean;
   onToggleDebug: (enabled: boolean) => void;
+  maxIterations?: number;
+  externalLogs?: DebugLogEntry[];
+  onAddLog?: (entry: Omit<DebugLogEntry, 'id' | 'timestamp'>) => void;
+  onClearLogs?: () => void;
 }
 
-export default function AlgorithmDebug({ isRunning, onToggleDebug }: AlgorithmDebugProps) {
+export default function AlgorithmDebug({ 
+  isRunning, 
+  onToggleDebug, 
+  maxIterations = 10, 
+  externalLogs = [],
+  onAddLog,
+  onClearLogs
+}: AlgorithmDebugProps) {
   const [logs, setLogs] = useState<DebugLogEntry[]>([]);
   const [isDebugEnabled, setIsDebugEnabled] = useState(false);
   const [currentIteration, setCurrentIteration] = useState(0);
@@ -40,14 +51,24 @@ export default function AlgorithmDebug({ isRunning, onToggleDebug }: AlgorithmDe
       const updated = [...prev, newEntry];
       return updated.slice(-MAX_LOGS); // Keep only last 100 entries
     });
+    
+    // Also call external callback if provided
+    if (onAddLog) {
+      onAddLog(entry);
+    }
   };
+
+  // Merge external logs with internal logs
+  const allLogs = [...logs, ...externalLogs].sort((a, b) => 
+    a.timestamp.getTime() - b.timestamp.getTime()
+  ).slice(-MAX_LOGS);
 
   // Auto-scroll to bottom when new logs are added
   useEffect(() => {
     if (logContainerRef.current) {
       logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
     }
-  }, [logs]);
+  }, [allLogs]);
 
   const toggleDebug = () => {
     setIsDebugEnabled(!isDebugEnabled);
@@ -70,6 +91,10 @@ export default function AlgorithmDebug({ isRunning, onToggleDebug }: AlgorithmDe
     setLogs([]);
     setCurrentIteration(0);
     setDistances({});
+    // Clear external logs if callback is provided
+    if (onClearLogs) {
+      onClearLogs();
+    }
   };
 
   // Simulate debug data when debugging is enabled (for demonstration)
@@ -88,7 +113,6 @@ export default function AlgorithmDebug({ isRunning, onToggleDebug }: AlgorithmDe
 
       // Simulate iterations
       let iteration = 0;
-      const maxIterations = 5;
       
       const runIteration = () => {
         if (iteration >= maxIterations) {
@@ -136,7 +160,7 @@ export default function AlgorithmDebug({ isRunning, onToggleDebug }: AlgorithmDe
 
     const interval = setInterval(simulateAlgorithmExecution, 5000); // Run every 5 seconds
     return () => clearInterval(interval);
-  }, [isDebugEnabled, isRunning]);
+  }, [isDebugEnabled, isRunning, addLog, maxIterations]);
 
   const getLogTypeColor = (type: DebugLogEntry['type']) => {
     switch (type) {
@@ -199,7 +223,7 @@ export default function AlgorithmDebug({ isRunning, onToggleDebug }: AlgorithmDe
             {currentIteration > 0 && (
               <Badge variant="outline">Iterace: {currentIteration}</Badge>
             )}
-            <Badge variant="outline">{logs.length} logů</Badge>
+            <Badge variant="outline">{allLogs.length} logů</Badge>
           </div>
         </div>
 
@@ -225,7 +249,7 @@ export default function AlgorithmDebug({ isRunning, onToggleDebug }: AlgorithmDe
           ref={logContainerRef}
           className="h-80 overflow-y-auto"
         >
-          {logs.length === 0 ? (
+          {allLogs.length === 0 ? (
             <div className="flex items-center justify-center h-full text-gray-500">
               <div className="text-center">
                 <Terminal className="h-8 w-8 mx-auto mb-2 opacity-50" />
@@ -235,7 +259,7 @@ export default function AlgorithmDebug({ isRunning, onToggleDebug }: AlgorithmDe
             </div>
           ) : (
             <div className="p-4 space-y-2">
-              {logs.map((log) => (
+              {allLogs.map((log) => (
                 <div key={log.id} className="flex items-start gap-3 text-sm">
                   <span className="text-xs text-gray-400 mt-0.5 w-16 shrink-0">
                     {log.timestamp.toLocaleTimeString('cs-CZ', { 
